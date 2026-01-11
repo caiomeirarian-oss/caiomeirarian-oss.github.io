@@ -2,14 +2,19 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>MultiTrack Pro</title>
+    
     <!-- PWA Meta Tags -->
     <meta name="description" content="Editor de áudio profissional com múltiplas tracks">
     <meta name="theme-color" content="#3b82f6">
+    
+    <!-- Meta tags para tela cheia -->
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="MultiTrack">
+    
     <!-- Manifest -->
     <link rel="manifest" href="manifest.json">
     
@@ -43,13 +48,15 @@
     <input type="file" id="folderInput" accept="audio/*" webkitdirectory directory multiple class="hidden">
     <input type="file" id="projectImportInput" accept=".mtp,.json" class="hidden">
     <input type="file" id="libraryFolderInput" webkitdirectory directory class="hidden">
-<input type="file" id="folderInputLibrary" accept="audio/*" webkitdirectory directory multiple class="hidden">
+    <input type="file" id="folderInputLibrary" accept="audio/*" webkitdirectory directory multiple class="hidden">
+    
     <script src="script.js"></script>
+    
     <!-- PWA Registration -->
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/service-worker.js')
+                navigator.serviceWorker.register('./service-worker.js')
                     .then(registration => {
                         console.log('✅ Service Worker registrado:', registration.scope);
                     })
