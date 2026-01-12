@@ -2,7 +2,7 @@
   "name": "MultiTrack Pro",
   "short_name": "MultiTrack",
   "description": "Editor de áudio profissional com múltiplas tracks",
-  "start_url": "./",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#000000",
   "theme_color": "#3b82f6",
@@ -23,7 +23,7 @@
   ],
   "categories": ["music", "productivity", "utilities"],
   "screenshots": [],
-  "scope": "./",
+  "scope": "/",
   "lang": "pt-BR",
   "dir": "ltr"
 }
