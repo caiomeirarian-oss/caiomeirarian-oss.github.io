@@ -1,154 +1,77 @@
-const CACHE_NAME = 'multitrack-pro-v1.0.3';
-const STATIC_CACHE = 'multitrack-static-v1.0.3';
-const DYNAMIC_CACHE = 'multitrack-dynamic-v1.0.3';
-
-// Arquivos essenciais que SEMPRE devem estar no cache
-const CORE_FILES = [
-  './',
-  './index.html',
-  './style.css',
-  './script.js',
-  './manifest.json',
-  './icon-192.png',
-  './icon-512.png'
+const CACHE_NAME = 'multitrack-pro-v1.0.0';
+const urlsToCache = [
+  '/',
+  '/index.html',
+  '/style.css',
+  '/script.js',
+  '/manifest.json'
 ];
 
-// Recursos externos importantes
-const EXTERNAL_RESOURCES = [
-  'https://unpkg.com/lucide@latest/dist/umd/lucide.js'
-];
-
-// Instalação - cacheia arquivos essenciais
+// Instalação do Service Worker
 self.addEventListener('install', event => {
-  console.log('🔧 Service Worker: Instalando v1.0.3...');
   event.waitUntil(
-    Promise.all([
-      // Cache de arquivos estáticos
-      caches.open(STATIC_CACHE).then(cache => {
-        console.log('📦 Cacheando arquivos estáticos...');
-        return cache.addAll(CORE_FILES);
-      }),
-      // Cache de recursos externos
-      caches.open(DYNAMIC_CACHE).then(cache => {
-        console.log('🌐 Cacheando recursos externos...');
-        return Promise.allSettled(
-          EXTERNAL_RESOURCES.map(url => 
-            fetch(url)
-              .then(response => cache.put(url, response))
-              .catch(err => console.warn('⚠️ Não foi possível cachear:', url))
-          )
-        );
+    caches.open(CACHE_NAME)
+      .then(cache => {
+        console.log('✅ Cache aberto');
+        return cache.addAll(urlsToCache);
       })
-    ]).then(() => {
-      console.log('✅ Instalação concluída - forçando ativação');
-      return self.skipWaiting();
-    })
   );
+  self.skipWaiting();
 });
 
-// Ativação - limpa caches antigos e assume controle
+// Ativação do Service Worker
 self.addEventListener('activate', event => {
-  console.log('🚀 Service Worker: Ativando...');
   event.waitUntil(
     caches.keys().then(cacheNames => {
       return Promise.all(
         cacheNames.map(cacheName => {
-          // Remove qualquer cache que não seja o atual
-          if (cacheName !== STATIC_CACHE && cacheName !== DYNAMIC_CACHE) {
+          if (cacheName !== CACHE_NAME) {
             console.log('🗑️ Removendo cache antigo:', cacheName);
             return caches.delete(cacheName);
           }
         })
       );
-    }).then(() => {
-      console.log('✅ Service Worker ativado e assumiu controle');
-      return self.clients.claim();
     })
   );
+  self.clients.claim();
 });
 
-// Fetch - estratégia híbrida
+// Interceptar requisições
 self.addEventListener('fetch', event => {
-  const url = new URL(event.request.url);
-  
-  // Ignora requisições não-GET
-  if (event.request.method !== 'GET') {
+  // Ignora requisições não-GET e URLs externas
+  if (event.request.method !== 'GET' || !event.request.url.startsWith(self.location.origin)) {
     return;
   }
 
-  // Estratégia para arquivos estáticos (HTML, CSS, JS, imagens)
-  const isStaticFile = CORE_FILES.some(file => 
-    event.request.url.includes(file.replace('./', ''))
-  );
-
-  if (isStaticFile) {
-    // Cache First para arquivos estáticos
-    event.respondWith(
-      caches.match(event.request).then(cachedResponse => {
-        if (cachedResponse) {
-          console.log('📦 Cache HIT:', event.request.url);
-          // Retorna do cache mas atualiza em background
-          fetch(event.request).then(response => {
-            if (response && response.status === 200) {
-              caches.open(STATIC_CACHE).then(cache => {
-                cache.put(event.request, response);
-              });
-            }
-          }).catch(() => {});
-          return cachedResponse;
+  event.respondWith(
+    caches.match(event.request)
+      .then(response => {
+        // Retorna do cache se encontrar
+        if (response) {
+          return response;
         }
-        
-        // Se não tem no cache, busca da rede
-        console.log('🌐 Cache MISS, buscando da rede:', event.request.url);
+
+        // Faz requisição de rede
         return fetch(event.request).then(response => {
-          if (response && response.status === 200) {
-            const responseToCache = response.clone();
-            caches.open(STATIC_CACHE).then(cache => {
+          // Verifica se recebeu resposta válida
+          if (!response || response.status !== 200 || response.type !== 'basic') {
+            return response;
+          }
+
+          // Clona a resposta
+          const responseToCache = response.clone();
+
+          caches.open(CACHE_NAME)
+            .then(cache => {
               cache.put(event.request, responseToCache);
             });
-          }
+
           return response;
-        }).catch(() => {
-          // Fallback para index.html se for navegação
-          if (event.request.mode === 'navigate') {
-            return caches.match('./index.html');
-          }
         });
       })
-    );
-  } else {
-    // Network First para recursos externos e dinâmicos
-    event.respondWith(
-      fetch(event.request)
-        .then(response => {
-          if (response && response.status === 200) {
-            const responseToCache = response.clone();
-            caches.open(DYNAMIC_CACHE).then(cache => {
-              cache.put(event.request, responseToCache);
-            });
-          }
-          return response;
-        })
-        .catch(() => {
-          // Se offline, busca do cache
-          return caches.match(event.request).then(cachedResponse => {
-            if (cachedResponse) {
-              console.log('📦 Servindo do cache (offline):', event.request.url);
-              return cachedResponse;
-            }
-            // Fallback final
-            if (event.request.mode === 'navigate') {
-              return caches.match('./index.html');
-            }
-          });
-        })
-    );
-  }
-});
-
-// Mensagens do cliente
-self.addEventListener('message', event => {
-  if (event.data === 'skipWaiting') {
-    self.skipWaiting();
-  }
+      .catch(() => {
+        // Retorna página offline se disponível
+        return caches.match('/index.html');
+      })
+  );
 });
