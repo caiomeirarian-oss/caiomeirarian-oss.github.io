@@ -9,11 +9,25 @@ let masterGainNode = null;
 let bpmInterval = null;
 let vuMeterInterval = null;
 let projectsLibraryHandle = null;
+// Sistema de biblioteca de arquivos
+let libraryFolderHandle = null;  // Referência à pasta da biblioteca
+let currentProjectFiles = [];     // Arquivos de áudio do projeto atual
+let isFirstRun = true;            // Detecta primeiro acesso ao app
 // Detecção de plataforma
+// Detecção melhorada
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-const supportsFileSystem = 'showDirectoryPicker' in window && !isMobile;
+const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+const supportsFileSystem = 'showDirectoryPicker' in window && !isIOS; // Só bloqueia iOS
 // File System API
 let projectFolderHandle = null;
+
+// Google Drive API
+let googleDriveEnabled = false;
+let googleAccessToken = null;
+let googleDriveFolderId = null; // ID da pasta "MultiTrack" no Drive
+const GOOGLE_CLIENT_ID = '710387058994-ajtmes5kobh3o0oao3d5bps22s52v6r1.apps.googleusercontent.com';
+const GOOGLE_API_KEY = 'AIzaSyA0AEysMM-wlSjSf2ud4ZLEe3-i6Ze5DWQ'; // Opcional, mas recomendado
+const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
 
 // Undo/Redo System
 let history = [];
@@ -41,7 +55,14 @@ let state = {
     fadeInTime: 0.5,
     fadeOutTime: 1.5,
     syncOffset: 0,
-    libraryPath: null
+    libraryPath: null,
+    isProjectModified: false,    // ← NOVO
+    lastSavedState: null,          // ← NOVO
+     // NOVOS CAMPOS PARA GOOGLE DRIVE
+    storageMode: 'local', // 'local', 'folder', 'drive'
+    googleDriveConnected: false,
+    googleDriveEmail: null,
+    lastSyncTime: null
 };
 
 const trackColors = ['color-yellow', 'color-blue', 'color-green', 'color-red', 'color-purple', 'color-pink', 'color-indigo', 'color-orange'];
@@ -98,20 +119,1000 @@ function updateMasterGain() {
     }
 }
 
-function initializeApp() {
+async function initializeApp() {
     lucide.createIcons();
-    loadProjectsFromLocalStorage();
+    
+// NOVO: Carrega Google Drive API
+await loadGoogleAPI();
+
+// Tenta restaurar sessão
+const config = loadLibraryConfig();
+if (config.googleAccessToken) {
+    googleAccessToken = config.googleAccessToken;
+    const isValid = await validateToken();
+    if (isValid) {
+        gapi.client.setToken({ access_token: googleAccessToken });
+        await handleGoogleSignIn();
+    } else {
+        // Token expirado
+        googleAccessToken = null;
+        config.googleAccessToken = null;
+        config.storageMode = 'local';
+        saveLibraryConfig(config);
+    }
+}
+    
+    if (config.firstRun) {
+        // Primeiro acesso - mostra onboarding
+        isFirstRun = true;
+        await showOnboardingModal();
+    } else {
+        // Já configurou - tenta restaurar acesso à pasta
+        isFirstRun = false;
+        if (config.libraryPath) {
+            state.libraryPath = config.libraryPath;
+            
+            // Tenta recuperar handle do IndexedDB
+            if (supportsFileSystem) {
+                showLoadingOverlay();
+                updateLoadingProgress(1, 1, 'Carregando biblioteca...');
+                
+                try {
+                    libraryFolderHandle = await loadHandleFromIndexedDB();
+                    
+                    if (libraryFolderHandle) {
+                        // Verifica/pede permissão
+                        const hasPermission = await verifyPermission(libraryFolderHandle);
+                        
+                        if (hasPermission) {
+                            await loadProjectsFromLibrary();
+                        } else {
+                            console.log('⚠️ Sem permissão para acessar pasta');
+                        }
+                    } else {
+                        console.log('ℹ️ Nenhum handle salvo. Usuário pode selecionar pasta nas Settings.');
+                    }
+                } catch (err) {
+                    console.error('Erro ao restaurar biblioteca:', err);
+                }
+                
+                hideLoadingOverlay();
+            }
+        }
+        
+        // NOVO: Carrega projetos do localStorage (mobile/importados)
+        const localProjects = loadProjectsFromLocalStorage();
+        if (localProjects.length > 0) {
+            // Mescla com projetos da biblioteca (evita duplicatas)
+            localProjects.forEach(lp => {
+                const exists = state.savedProjects.find(p => p.id === lp.id);
+                if (!exists) {
+                    state.savedProjects.push(lp);
+                }
+            });
+            console.log(`✅ Total: ${state.savedProjects.length} projeto(s) disponíveis`);
+        }
+    }
+}
+// NOVA FUNÇÃO - Adicione logo após initializeApp()
+function loadLibraryConfig() {
+    try {
+        const saved = localStorage.getItem('multitrack_library_config');
+        if (saved) {
+            return JSON.parse(saved);
+        }
+    } catch (err) {
+        console.error('Erro ao carregar config:', err);
+    }
+    
+    // Configuração padrão
+    return {
+        firstRun: true,
+        libraryPath: null,
+        theme: 'dark',
+        language: 'pt-BR'
+    };
 }
 
+// ========================================
+// GOOGLE DRIVE API INTEGRATION - VERSÃO CORRIGIDA
+// ========================================
+
+async function loadGoogleAPI() {
+    return new Promise((resolve) => {
+        console.log('🔄 Carregando Google API...');
+        
+        // Carrega Google Identity Services (NOVO)
+        const gisScript = document.createElement('script');
+        gisScript.src = 'https://accounts.google.com/gsi/client';
+        gisScript.onload = () => {
+            console.log('✅ Google Identity Services carregada');
+            
+            // Carrega GAPI
+            const gapiScript = document.createElement('script');
+            gapiScript.src = 'https://apis.google.com/js/api.js';
+            gapiScript.onload = () => {
+                console.log('✅ GAPI carregada');
+                
+                gapi.load('client', async () => {
+                    try {
+                        await gapi.client.init({
+                            apiKey: GOOGLE_API_KEY,
+                            discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest']
+                        });
+                        console.log('✅ Google Drive API inicializada');
+                        resolve();
+                    } catch (err) {
+                        console.error('❌ Erro ao inicializar GAPI:', err);
+                        resolve();
+                    }
+                });
+            };
+            gapiScript.onerror = () => {
+                console.error('❌ Erro ao carregar GAPI');
+                resolve();
+            };
+            document.head.appendChild(gapiScript);
+        };
+        gisScript.onerror = () => {
+            console.error('❌ Erro ao carregar GIS');
+            resolve();
+        };
+        document.head.appendChild(gisScript);
+    });
+}
+
+// NOVA VERSÃO - Usa método de redirect ao invés de popup
+async function connectGoogleDrive() {
+    try {
+        showLoadingOverlay();
+        updateLoadingProgress(1, 1, 'Conectando ao Google Drive...');
+        
+        // Verifica se já está conectado
+        if (state.googleDriveConnected && googleAccessToken) {
+            const isValid = await validateToken();
+            if (isValid) {
+                hideLoadingOverlay();
+                showAlert('✅ Já conectado ao Google Drive!\n\n📧 ' + state.googleDriveEmail);
+                return;
+            }
+        }
+        
+        console.log('🔐 Iniciando autenticação Google...');
+        
+        // Cliente OAuth2 com Token (NOVO MÉTODO)
+        const tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: GOOGLE_CLIENT_ID,
+            scope: GOOGLE_SCOPES,
+            callback: async (response) => {
+                if (response.error) {
+                    console.error('❌ Erro OAuth:', response);
+                    hideLoadingOverlay();
+                    showAlert('❌ Erro na autenticação:\n\n' + response.error);
+                    return;
+                }
+                
+                console.log('✅ Token recebido');
+                googleAccessToken = response.access_token;
+                
+                // Define token no GAPI
+                gapi.client.setToken({
+                    access_token: googleAccessToken
+                });
+                
+                // Continua o processo
+                await handleGoogleSignIn();
+            },
+        });
+        
+        // Solicita token
+        tokenClient.requestAccessToken({ prompt: 'consent' });
+        
+    } catch (err) {
+        console.error('❌ Erro ao conectar:', err);
+        hideLoadingOverlay();
+        showAlert('❌ Erro ao conectar:\n\n' + err.message);
+    }
+}
+
+// NOVA FUNÇÃO - Valida token existente
+async function validateToken() {
+    if (!googleAccessToken) return false;
+    
+    try {
+        const response = await fetch('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + googleAccessToken);
+        return response.ok;
+    } catch {
+        return false;
+    }
+}
+
+
+// Função mantida, mas com validação melhorada
+async function handleGoogleSignIn() {
+    try {
+        showLoadingOverlay();
+        updateLoadingProgress(1, 1, 'Conectando ao Google Drive...');
+        
+        if (!googleAccessToken) {
+            throw new Error('Token não disponível');
+        }
+        
+        // NOVO: Usa a API do Google People ao invés de OAuth2
+        let userInfo;
+        
+        try {
+            // Tenta via People API
+            const response = await fetch('https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses', {
+                headers: {
+                    'Authorization': `Bearer ${googleAccessToken}`
+                }
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                userInfo = {
+                    email: data.emailAddresses?.[0]?.value || 'usuario@gmail.com'
+                };
+            } else {
+                // Fallback: usa gapi
+                await gapi.client.load('oauth2', 'v2');
+                const gapiResponse = await gapi.client.oauth2.userinfo.get();
+                userInfo = {
+                    email: gapiResponse.result.email
+                };
+            }
+        } catch (err) {
+            console.warn('⚠️ Erro ao obter email, usando fallback:', err);
+            // Fallback final: pede pro usuário informar
+            const email = await showPrompt('Digite seu email do Google:', 'seu@gmail.com');
+            if (!email) {
+                hideLoadingOverlay();
+                return;
+            }
+            userInfo = { email: email };
+        }
+        
+        state.googleDriveConnected = true;
+        state.googleDriveEmail = userInfo.email;
+        state.storageMode = 'drive';
+        
+        // Salva configuração
+        const config = loadLibraryConfig();
+        config.storageMode = 'drive';
+        config.googleEmail = state.googleDriveEmail;
+        config.googleAccessToken = googleAccessToken;
+        saveLibraryConfig(config);
+        
+        // Cria/obtém pasta "MultiTrack" no Drive
+        await ensureMultiTrackFolder();
+        
+        // Carrega projetos do Drive
+        await loadProjectsFromDrive();
+        
+        hideLoadingOverlay();
+        showAlert(`✅ Conectado ao Google Drive!\n\n📧 ${state.googleDriveEmail}\n\nSeus projetos serão salvos na nuvem.`);
+        render();
+        
+        console.log('✅ Google Drive conectado:', state.googleDriveEmail);
+        
+    } catch (err) {
+        console.error('❌ Erro ao obter informações do usuário:', err);
+        hideLoadingOverlay();
+        
+        showAlert(
+            '❌ Erro ao conectar.\n\n' +
+            'Tente reconectar ou verifique as permissões.'
+        );
+    }
+}
+
+// RESTO DAS FUNÇÕES (disconnectGoogleDrive, ensureMultiTrackFolder, etc.) 
+// permanecem iguais...
+
+async function disconnectGoogleDrive() {
+    const confirmed = await showConfirm(
+        '⚠️ Desconectar do Google Drive?\n\n' +
+        'Seus projetos na nuvem não serão apagados.\n' +
+        'Você pode reconectar depois.'
+    );
+    
+    if (!confirmed) return;
+    
+    try {
+        // Revoga token
+        if (googleAccessToken) {
+            await fetch(`https://oauth2.googleapis.com/revoke?token=${googleAccessToken}`, {
+                method: 'POST'
+            });
+        }
+        
+        // Limpa token do GAPI
+        if (window.gapi?.client) {
+            gapi.client.setToken(null);
+        }
+        
+        googleAccessToken = null;
+        googleDriveFolderId = null;
+        state.googleDriveConnected = false;
+        state.googleDriveEmail = null;
+        state.storageMode = 'local';
+        
+        // Remove projetos do Drive da lista
+        state.savedProjects = state.savedProjects.filter(p => p.source !== 'drive');
+        
+        // Atualiza config
+        const config = loadLibraryConfig();
+        config.storageMode = 'local';
+        config.googleEmail = null;
+        saveLibraryConfig(config);
+        
+        showAlert('✅ Desconectado do Google Drive');
+        render();
+        
+    } catch (err) {
+        console.error('❌ Erro ao desconectar:', err);
+        showAlert('❌ Erro ao desconectar');
+    }
+}
+
+async function ensureMultiTrackFolder() {
+    try {
+        // Busca pasta "MultiTrack"
+        const response = await gapi.client.drive.files.list({
+            q: "name='MultiTrack' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            spaces: 'drive',
+            fields: 'files(id, name)'
+        });
+        
+        if (response.result.files.length > 0) {
+            // Pasta já existe
+            googleDriveFolderId = response.result.files[0].id;
+            console.log('✅ Pasta MultiTrack encontrada:', googleDriveFolderId);
+        } else {
+            // Cria nova pasta
+            const fileMetadata = {
+                name: 'MultiTrack',
+                mimeType: 'application/vnd.google-apps.folder'
+            };
+            
+            const folder = await gapi.client.drive.files.create({
+                resource: fileMetadata,
+                fields: 'id'
+            });
+            
+            googleDriveFolderId = folder.result.id;
+            console.log('✅ Pasta MultiTrack criada:', googleDriveFolderId);
+        }
+        
+    } catch (err) {
+        console.error('❌ Erro ao criar pasta MultiTrack:', err);
+        throw err;
+    }
+}
+
+async function loadProjectsFromDrive() {
+    if (!googleDriveFolderId) return;
+    
+    try {
+        showLoadingOverlay();
+        updateLoadingProgress(1, 1, 'Carregando projetos da nuvem...');
+        
+        // Lista todas as pastas de projetos
+        const response = await gapi.client.drive.files.list({
+            q: `'${googleDriveFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+            spaces: 'drive',
+            fields: 'files(id, name, modifiedTime)',
+            orderBy: 'modifiedTime desc'
+        });
+        
+        const driveProjects = [];
+        
+        for (const folder of response.result.files) {
+            try {
+                // Busca projeto.json dentro da pasta
+                const jsonSearch = await gapi.client.drive.files.list({
+                    q: `name='projeto.json' and '${folder.id}' in parents and trashed=false`,
+                    fields: 'files(id)'
+                });
+                
+                if (jsonSearch.result.files.length === 0) continue;
+                
+                // Baixa projeto.json
+                const jsonContent = await gapi.client.drive.files.get({
+                    fileId: jsonSearch.result.files[0].id,
+                    alt: 'media'
+                });
+                
+                const projectData = JSON.parse(jsonContent.body);
+                projectData.source = 'drive';
+                projectData.driveFileId = folder.id;
+                projectData.updatedAt = new Date(folder.modifiedTime).toLocaleString('pt-BR');
+                
+                driveProjects.push(projectData);
+                
+            } catch (err) {
+                console.error(`Erro ao carregar ${folder.name}:`, err);
+            }
+        }
+        
+        state.savedProjects = state.savedProjects.filter(p => p.source !== 'drive');
+        state.savedProjects.push(...driveProjects);
+        
+        state.lastSyncTime = new Date().toLocaleString('pt-BR');
+        
+        hideLoadingOverlay();
+        console.log(`✅ ${driveProjects.length} projeto(s) carregado(s) do Drive`);
+        
+    } catch (err) {
+        console.error('❌ Erro ao carregar projetos:', err);
+        hideLoadingOverlay();
+    }
+}
+// ========================================
+// SAVE PROJECT TO DRIVE - VERSÃO CORRIGIDA
+// Envia áudios como arquivos separados
+// ========================================
+
+async function saveProjectToDrive(projectData) {
+    if (!googleDriveFolderId) {
+        throw new Error('Pasta MultiTrack não encontrada');
+    }
+    
+    try {
+        showLoadingOverlay();
+        
+        // PASSO 1: Cria/obtém pasta do projeto
+        updateLoadingProgress(1, projectData.tracks.length + 2, 'Criando pasta do projeto...');
+        
+        const projectFolderName = `${projectData.name.replace(/[^a-z0-9]/gi, '_')}_${projectData.id}`;
+        let projectFolderId = projectData.driveProjectFolderId;
+        
+        if (!projectFolderId) {
+            // Busca pasta existente ou cria nova
+            const searchResponse = await gapi.client.drive.files.list({
+                q: `name='${projectFolderName}' and '${googleDriveFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+                spaces: 'drive',
+                fields: 'files(id)'
+            });
+            
+            if (searchResponse.result.files.length > 0) {
+                projectFolderId = searchResponse.result.files[0].id;
+            } else {
+                const createResponse = await gapi.client.drive.files.create({
+                    resource: {
+                        name: projectFolderName,
+                        mimeType: 'application/vnd.google-apps.folder',
+                        parents: [googleDriveFolderId]
+                    },
+                    fields: 'id'
+                });
+                projectFolderId = createResponse.result.id;
+            }
+        }
+        
+        // PASSO 2: Upload dos áudios como arquivos separados
+        const trackFilenames = [];
+        
+        for (let i = 0; i < projectData.tracks.length; i++) {
+            const track = projectData.tracks[i];
+            updateLoadingProgress(i + 2, projectData.tracks.length + 2, `Enviando ${track.name}...`);
+            
+            if (!track.audioData) {
+                console.warn(`Track ${track.name} sem audioData`);
+                continue;
+            }
+            
+            try {
+                // Converte base64 para Blob
+                const base64Data = track.audioData.split(',')[1];
+                const byteCharacters = atob(base64Data);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let j = 0; j < byteCharacters.length; j++) {
+                    byteNumbers[j] = byteCharacters.charCodeAt(j);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const audioBlob = new Blob([byteArray], { type: 'audio/mpeg' });
+                
+                // Nome do arquivo
+                const audioFilename = `track_${track.id}_${track.name.replace(/[^a-z0-9]/gi, '_')}.mp3`;
+                
+                // Upload usando multipart (suporta até 5MB)
+                const metadata = {
+                    name: audioFilename,
+                    parents: [projectFolderId]
+                };
+                
+                const form = new FormData();
+                form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+                form.append('file', audioBlob);
+                
+                // Busca arquivo existente
+                const searchAudio = await gapi.client.drive.files.list({
+                    q: `name='${audioFilename}' and '${projectFolderId}' in parents and trashed=false`,
+                    fields: 'files(id)'
+                });
+                
+                let audioFileId;
+                
+                if (searchAudio.result.files.length > 0) {
+                    // Atualiza arquivo existente
+                    audioFileId = searchAudio.result.files[0].id;
+                    const response = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${audioFileId}?uploadType=multipart`, {
+                        method: 'PATCH',
+                        headers: {
+                            'Authorization': `Bearer ${googleAccessToken}`
+                        },
+                        body: form
+                    });
+                    
+                    if (!response.ok) throw new Error('Erro ao atualizar áudio');
+                    
+                } else {
+                    // Cria novo arquivo
+                    const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${googleAccessToken}`
+                        },
+                        body: form
+                    });
+                    
+                    if (!response.ok) throw new Error('Erro ao enviar áudio');
+                    
+                    const result = await response.json();
+                    audioFileId = result.id;
+                }
+                
+                trackFilenames.push({
+                    trackId: track.id,
+                    driveFileId: audioFileId,
+                    filename: audioFilename
+                });
+                
+            } catch (err) {
+                console.error(`Erro ao enviar ${track.name}:`, err);
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // PASSO 3: Salva projeto.json (SEM audioData)
+        updateLoadingProgress(projectData.tracks.length + 2, projectData.tracks.length + 2, 'Salvando projeto.json...');
+        
+        const tracksMetadata = projectData.tracks.map(t => {
+            const fileInfo = trackFilenames.find(tf => tf.trackId === t.id);
+            return {
+                id: t.id,
+                name: t.name,
+                volume: t.volume,
+                pan: t.pan,
+                solo: t.solo,
+                mute: t.mute,
+                color: t.color,
+                driveFileId: fileInfo?.driveFileId,
+                filename: fileInfo?.filename
+            };
+        });
+        
+        const projectMetadata = {
+            id: projectData.id,
+            name: projectData.name,
+            tracks: tracksMetadata,
+            markers: projectData.markers,
+            markerShortcuts: projectData.markerShortcuts,
+            duration: projectData.duration,
+            masterVolume: projectData.masterVolume,
+            masterMute: projectData.masterMute,
+            bpm: projectData.bpm,
+            key: projectData.key,
+            fadeInTime: projectData.fadeInTime,
+            fadeOutTime: projectData.fadeOutTime,
+            createdAt: projectData.createdAt,
+            updatedAt: new Date().toLocaleString('pt-BR'),
+            driveProjectFolderId: projectFolderId
+        };
+        
+        const jsonBlob = new Blob([JSON.stringify(projectMetadata, null, 2)], { type: 'application/json' });
+        
+        const jsonMetadata = {
+            name: 'projeto.json',
+            parents: [projectFolderId]
+        };
+        
+        const jsonForm = new FormData();
+        jsonForm.append('metadata', new Blob([JSON.stringify(jsonMetadata)], { type: 'application/json' }));
+        jsonForm.append('file', jsonBlob);
+        
+        // Busca projeto.json existente
+        const searchJson = await gapi.client.drive.files.list({
+            q: `name='projeto.json' and '${projectFolderId}' in parents and trashed=false`,
+            fields: 'files(id)'
+        });
+        
+        if (searchJson.result.files.length > 0) {
+            // Atualiza
+            await fetch(`https://www.googleapis.com/upload/drive/v3/files/${searchJson.result.files[0].id}?uploadType=multipart`, {
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${googleAccessToken}`
+                },
+                body: jsonForm
+            });
+        } else {
+            // Cria novo
+            await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${googleAccessToken}`
+                },
+                body: jsonForm
+            });
+        }
+        
+        projectMetadata.source = 'drive';
+        projectMetadata.driveFileId = projectFolderId;
+        
+        state.lastSyncTime = new Date().toLocaleString('pt-BR');
+        
+        hideLoadingOverlay();
+        console.log('✅ Projeto salvo no Drive:', projectFolderId);
+        
+        return projectMetadata;
+        
+    } catch (err) {
+        hideLoadingOverlay();
+        console.error('❌ Erro ao salvar no Drive:', err);
+        throw err;
+    }
+}
+async function deleteProjectFromDrive(fileId) {
+    try {
+        await gapi.client.drive.files.delete({
+            fileId: fileId
+        });
+        
+        console.log('✅ Projeto deletado do Drive:', fileId);
+        
+    } catch (err) {
+        console.error('❌ Erro ao deletar do Drive:', err);
+        throw err;
+    }
+}
+
+
+// ========================================
+// INDEXEDDB COM FALLBACK PARA LOCALSTORAGE
+// ========================================
+
+async function saveHandleToIndexedDB(handle) {
+    try {
+        const db = await openDatabase();
+        const tx = db.transaction('fileHandles', 'readwrite');
+        const store = tx.objectStore('fileHandles');
+        
+        await store.put({
+            id: 'libraryFolder',
+            handle: handle
+        });
+        
+        await tx.done;
+        console.log('✅ Handle salvo no IndexedDB');
+        return true;
+    } catch (err) {
+        console.warn('⚠️ IndexedDB bloqueado, usando fallback:', err);
+        
+        // FALLBACK: Salva apenas o nome da pasta
+        try {
+            localStorage.setItem('multitrack_folder_name', handle.name);
+            console.log('✅ Nome da pasta salvo no localStorage (fallback)');
+            return true;
+        } catch (lsErr) {
+            console.error('❌ Todos os storages bloqueados:', lsErr);
+            return false;
+        }
+    }
+}
+
+async function loadHandleFromIndexedDB() {
+    try {
+        const db = await openDatabase();
+        const tx = db.transaction('fileHandles', 'readonly');
+        const store = tx.objectStore('fileHandles');
+        
+        const result = await store.get('libraryFolder');
+        
+        if (result && result.handle) {
+            console.log('✅ Handle recuperado do IndexedDB');
+            return result.handle;
+        }
+        
+        console.log('ℹ️ Nenhum handle no IndexedDB');
+        return null;
+    } catch (err) {
+        console.warn('⚠️ IndexedDB bloqueado:', err);
+        
+        // FALLBACK: Não consegue recuperar handle, apenas avisa
+        const folderName = localStorage.getItem('multitrack_folder_name');
+        if (folderName) {
+            console.log(`ℹ️ Pasta salva: ${folderName} (precisará selecionar novamente)`);
+        }
+        return null;
+    }
+}
+
+
+async function verifyPermission(handle) {
+    if (!handle) return false;
+    
+    const options = { mode: 'readwrite' };
+    
+    try {
+        // Checa se já tem permissão
+        if (await handle.queryPermission(options) === 'granted') {
+            console.log('✅ Permissão já concedida');
+            return true;
+        }
+        
+        // Pede permissão ao usuário
+        console.log('🔐 Pedindo permissão...');
+        if (await handle.requestPermission(options) === 'granted') {
+            console.log('✅ Permissão concedida');
+            return true;
+        }
+        
+        console.warn('⚠️ Permissão negada');
+        return false;
+    } catch (err) {
+        console.error('❌ Erro ao verificar permissão:', err);
+        return false;
+    }
+}
+
+async function openDatabase() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('MultiTrackProDB', 1);
+        
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+        
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            
+            if (!db.objectStoreNames.contains('fileHandles')) {
+                db.createObjectStore('fileHandles', { keyPath: 'id' });
+            }
+        };
+    });
+}
+
+
+// NOVA FUNÇÃO - Adicione logo após loadLibraryConfig()
+function saveLibraryConfig(config) {
+    try {
+        localStorage.setItem('multitrack_library_config', JSON.stringify(config));
+        console.log('✅ Configuração salva');
+    } catch (err) {
+        console.error('❌ Erro ao salvar config:', err);
+    }
+}
+async function showOnboardingModal() {
+    return new Promise(async (resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+            <div class="modal-content" style="max-width: 500px;">
+                <h3 class="modal-title">🎵 Bem-vindo ao MultiTrack Pro!</h3>
+                <div class="modal-body">
+                    <p style="margin-bottom: 1rem;">
+                        Para começar, escolha onde seus projetos serão salvos:
+                    </p>
+                    
+                    <div style="background: #1f2937; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                        <p style="font-size: 0.875rem; color: #9ca3af; margin: 0;">
+                            📁 <strong>Recomendado:</strong><br>
+                            • Android: Música/MultiTrack<br>
+                            • PC: Documentos/MultiTrack
+                        </p>
+                    </div>
+                    
+                    <p style="font-size: 0.875rem; color: #9ca3af;">
+                        ℹ️ Você pode mudar depois nas Configurações
+                    </p>
+                </div>
+                <div class="modal-buttons">
+                    ${supportsFileSystem ? `
+                        <button class="modal-btn modal-btn-primary" data-action="select-folder">
+                            <i data-lucide="folder-plus"></i>
+                            Selecionar Pasta
+                        </button>
+                    ` : `
+                        <button class="modal-btn modal-btn-primary" data-action="continue">
+                            Continuar
+                        </button>
+                    `}
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(overlay);
+        lucide.createIcons();
+
+        if (supportsFileSystem) {
+            const selectBtn = overlay.querySelector('[data-action="select-folder"]');
+            selectBtn.addEventListener('click', async () => {
+                const success = await setupLibraryFolder();
+                if (success) {
+                    overlay.remove();
+                    resolve(true);
+                }
+            });
+        } else {
+            const continueBtn = overlay.querySelector('[data-action="continue"]');
+            continueBtn.addEventListener('click', () => {
+                // Mobile: não precisa selecionar pasta (usa download/upload)
+                const config = {
+                    firstRun: false,
+                    libraryPath: 'Mobile (Download/Upload)',
+                    theme: 'dark',
+                    language: 'pt-BR'
+                };
+                saveLibraryConfig(config);
+                overlay.remove();
+                
+                showAlert('✅ Configuração concluída!\n\n📱 No celular, use:\n• "Salvar" para baixar projetos (.mtp)\n• "Importar .mtp" para carregar');
+                resolve(true);
+            });
+        }
+    });
+}
+
+// NOVA FUNÇÃO - Configura pasta da biblioteca
+async function setupLibraryFolder() {
+    if (!supportsFileSystem) {
+        return false;
+    }
+
+    try {
+        // Tenta abrir seletor de pasta
+        libraryFolderHandle = await window.showDirectoryPicker({
+            mode: 'readwrite',
+            startIn: 'documents'
+        });
+
+        state.libraryPath = libraryFolderHandle.name;
+        
+        // ← NOVO: Salva handle no IndexedDB
+        await saveHandleToIndexedDB(libraryFolderHandle);
+        
+        // Salva configuração
+        const config = {
+            firstRun: false,
+            libraryPath: state.libraryPath,
+            theme: 'dark',
+            language: 'pt-BR'
+        };
+        saveLibraryConfig(config);
+
+        // Carrega projetos existentes (se houver)
+        await loadProjectsFromLibrary();
+
+        showAlert(`✅ Biblioteca configurada!\n\n📁 Pasta: ${state.libraryPath}\n\nSeus projetos serão salvos aqui.`);
+        render();
+        return true;
+
+    } catch (err) {
+        if (err.name !== 'AbortError') {
+            console.error('Erro ao selecionar pasta:', err);
+            showAlert('❌ Erro ao selecionar pasta. Tente novamente.');
+        }
+        return false;
+    }
+}
+
+// NOVA FUNÇÃO - Carrega projetos da biblioteca
+async function loadProjectsFromLibrary() {
+    if (!libraryFolderHandle) {
+        // Tenta reabrir a pasta (se usuário já deu permissão antes)
+        return;
+    }
+
+    showLoadingOverlay();
+    updateLoadingProgress(0, 1, 'Carregando biblioteca...');
+
+    const projects = [];
+
+    try {
+        // Percorre todas as pastas na biblioteca
+        for await (const entry of libraryFolderHandle.values()) {
+            if (entry.kind === 'directory') {
+                try {
+                    const projectFolder = await libraryFolderHandle.getDirectoryHandle(entry.name);
+                    
+                    // Tenta ler projeto.json
+                    const fileHandle = await projectFolder.getFileHandle('projeto.json');
+                    const file = await fileHandle.getFile();
+                    const text = await file.text();
+                    const projectData = JSON.parse(text);
+
+                    projectData.folderName = entry.name;
+                    projectData.source = 'library';
+                    projects.push(projectData);
+
+                } catch (err) {
+                    console.log(`Pasta "${entry.name}" não contém projeto válido`);
+                }
+            }
+        }
+
+        state.savedProjects = projects;
+        console.log(`✅ ${projects.length} projeto(s) carregado(s)`);
+
+    } catch (err) {
+        console.error('Erro ao carregar biblioteca:', err);
+    }
+
+    hideLoadingOverlay();
+    render();
+}
+
+// ========================================
+// LOCALSTORAGE FALLBACK (MOBILE/IMPORTADOS)
+// ========================================
+
+function saveProjectsToLocalStorage() {
+    try {
+        // Filtra apenas projetos com audioData (podem ser salvos no localStorage)
+        const projectsToSave = state.savedProjects.filter(p => 
+            p.source === 'localStorage' || 
+            p.source === 'mobile' ||
+            p.source === 'imported' ||
+            (p.tracks && p.tracks.length > 0 && p.tracks[0].audioData)
+        );
+        
+        if (projectsToSave.length > 0) {
+            localStorage.setItem('multitrack_projects', JSON.stringify(projectsToSave));
+            console.log(`✅ ${projectsToSave.length} projeto(s) salvo(s) no localStorage`);
+        }
+    } catch (err) {
+        console.warn('⚠️ Erro ao salvar no localStorage:', err);
+    }
+}
+
+function loadProjectsFromLocalStorage() {
+    try {
+        const saved = localStorage.getItem('multitrack_projects');
+        if (saved) {
+            const projects = JSON.parse(saved);
+            console.log(`✅ ${projects.length} projeto(s) carregado(s) do localStorage`);
+            return projects;
+        }
+    } catch (err) {
+        console.error('❌ Erro ao carregar do localStorage:', err);
+    }
+    return [];
+}
 // ========================================
 // FILE SYSTEM API SUPPORT
 // ========================================
 
 function checkFileSystemAPISupport() {
+    console.log('🔍 Verificando File System API:');
+    console.log('   - showDirectoryPicker exists?', 'showDirectoryPicker' in window);
+    console.log('   - isMobile?', isMobile);
+    console.log('   - isIOS?', isIOS);
+    console.log('   - supportsFileSystem?', supportsFileSystem);
+    
     if (supportsFileSystem) {
         console.log('✅ File System Access API suportada! (Modo Desktop)');
     } else {
-        console.log('📱 Modo Mobile/Fallback ativado (Download/Upload de arquivos)');
+        if (isIOS) {
+            console.log('📱 iOS detectado - usando fallback');
+        } else if (!('showDirectoryPicker' in window)) {
+            console.log('⚠️ Navegador não suporta File System API');
+        } else {
+            console.log('📱 Modo Mobile/Fallback ativado');
+        }
     }
 }
 
@@ -123,104 +1124,9 @@ function loadLibraryPath() {
 }
 
 async function selectProjectsLibrary() {
-    // Se não suporta File System API, usa fallback
-    if (!supportsFileSystem) {
-        showAlert('💡 No Android, use "Salvar" para baixar projetos (.mtp) e "Importar .mtp" para carregá-los.\n\n✅ Seus projetos também são salvos automaticamente no navegador!');
-        return false;
-    }
-
-    try {
-        // Tenta diferentes pontos de partida dependendo do sistema
-        const options = {
-            mode: 'readwrite'
-        };
-        
-        // Tenta 'downloads' primeiro, depois 'music', depois 'documents'
-        const startLocations = ['downloads', 'music', 'documents'];
-        
-        for (const location of startLocations) {
-            try {
-                options.startIn = location;
-                projectsLibraryHandle = await window.showDirectoryPicker(options);
-                break; // Se conseguiu, sai do loop
-            } catch (err) {
-                if (err.name === 'AbortError') throw err; // Usuário cancelou
-                // Tenta próxima localização
-                continue;
-            }
-        }
-        
-        // Se ainda não conseguiu, tenta sem startIn
-        if (!projectsLibraryHandle) {
-            delete options.startIn;
-            projectsLibraryHandle = await window.showDirectoryPicker(options);
-        }
-        
-        state.libraryPath = projectsLibraryHandle.name;
-        localStorage.setItem('libraryPath', state.libraryPath);
-        
-        await loadProjectsFromFolder();
-        
-        showAlert(`✅ Biblioteca configurada: ${projectsLibraryHandle.name}\n\n📁 Seus projetos serão salvos nesta pasta!`);
-        render();
-        return true;
-    } catch (err) {
-        if (err.name !== 'AbortError') {
-            console.error('Erro ao selecionar pasta:', err);
-            showAlert('❌ Erro ao selecionar pasta.\n\n💡 Seus projetos serão salvos apenas no navegador. Use "Exportar" para fazer backup!');
-        }
-        return false;
-    }
-}
-
-// Carrega projetos da pasta selecionada
-async function loadProjectsFromFolder() {
-    if (!projectsLibraryHandle) return;
-    
-    showLoadingOverlay();
-    updateLoadingProgress(0, 1, 'Carregando projetos da pasta...');
-    
-    const projects = [];
-    
-    try {
-        for await (const entry of projectsLibraryHandle.values()) {
-            if (entry.kind === 'directory') {
-                try {
-                    const projectFolder = await projectsLibraryHandle.getDirectoryHandle(entry.name);
-                    const fileHandle = await projectFolder.getFileHandle('projeto.json');
-                    const file = await fileHandle.getFile();
-                    const text = await file.text();
-                    const projectData = JSON.parse(text);
-                    
-                    projectData.folderName = entry.name;
-                    projectData.source = 'folder'; // Marca como vindo da pasta
-                    projects.push(projectData);
-                } catch (err) {
-                    console.log(`Pasta ${entry.name} não contém projeto.json`);
-                }
-            }
-        }
-        
-        // Mescla com projetos do localStorage
-        const localProjects = loadProjectsFromLocalStorage() || [];
-        const mergedProjects = [...projects];
-        
-        // Adiciona projetos locais que não estão na pasta
-        localProjects.forEach(localProj => {
-            if (!projects.find(p => p.id === localProj.id)) {
-                localProj.source = 'localStorage';
-                mergedProjects.push(localProj);
-            }
-        });
-        
-        state.savedProjects = mergedProjects;
-        hideLoadingOverlay();
-        render();
-    } catch (err) {
-        console.error('Erro ao carregar projetos:', err);
-        hideLoadingOverlay();
-        showAlert('Erro ao carregar projetos da pasta');
-    }
+    // Chama a mesma função de onboarding
+    const success = await setupLibraryFolder();
+    return success;
 }
 
 // ========================================
@@ -255,7 +1161,18 @@ function setupEventListeners() {
         
         if (e.target.closest('.import-tracks-btn')) document.getElementById('fileInput').click();
         if (e.target.closest('.import-folder-btn')) document.getElementById('folderInput').click();
-        if (e.target.closest('.save-btn')) saveCurrentProject();
+        
+        // ========== CORRIGIDO AQUI ==========
+        if (e.target.closest('.save-btn')) {
+            console.log('🔘 Botão Salvar clicado!');
+            saveCurrentProject();
+        }
+        if (e.target.closest('.save-as-btn')) {
+            console.log('🔘 Botão Salvar Como clicado!');
+            saveProjectAs();
+        }
+        // ====================================
+        
         if (e.target.closest('.add-marker-btn')) addMarker();
         if (e.target.closest('.export-btn')) exportMixdown();
         if (e.target.closest('.fade-config-btn')) configureFade();
@@ -266,7 +1183,7 @@ function setupEventListeners() {
     document.getElementById('fileInput').addEventListener('change', handleFileUpload);
     document.getElementById('folderInput').addEventListener('change', handleFolderUpload);
     document.getElementById('projectImportInput').addEventListener('change', handleProjectImport);
-
+document.getElementById('multipleProjectImportInput').addEventListener('change', handleMultipleProjectImport);
     // Waveform scrubbing
     let isScrubbing = false;
     document.addEventListener('mousedown', (e) => {
@@ -379,6 +1296,42 @@ function saveToHistory() {
     }
 
     render();
+}
+
+// ========================================
+// DETECÇÃO DE MODIFICAÇÕES
+// ========================================
+
+function markProjectAsModified() {
+    if (!state.currentProject) return;
+    
+    state.isProjectModified = true;
+    render();
+}
+
+function markProjectAsSaved() {
+    state.isProjectModified = false;
+    state.lastSavedState = captureCurrentState();
+    render();
+}
+
+function captureCurrentState() {
+    return {
+        tracks: state.tracks.map(t => ({
+            id: t.id,
+            name: t.name,
+            volume: t.volume,
+            pan: t.pan,
+            solo: t.solo,
+            mute: t.mute
+        })),
+        markers: JSON.parse(JSON.stringify(state.markers)),
+        markerShortcuts: JSON.parse(JSON.stringify(state.markerShortcuts)),
+        masterVolume: state.masterVolume,
+        masterMute: state.masterMute,
+        bpm: state.bpm,
+        key: state.key
+    };
 }
 
 function undo() {
@@ -762,7 +1715,13 @@ source.channelInterpretation = 'speakers';
     
     // Save initial state to history
     saveToHistory();
-    
+     for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const track = newTracks[i];
+        if (track) {
+            track.originalFile = file;  // ← IMPORTANTE: salva arquivo original
+        }
+    }
     render();
 }
 
@@ -901,6 +1860,7 @@ function handleVolumeChange(trackId, value) {
     if (track) {
         track.volume = parseInt(value);
         track.gainNode.gain.setValueAtTime(track.volume / 100, audioContext.currentTime);
+        markProjectAsModified(); 
         saveToHistory();
         render();
     }
@@ -928,6 +1888,7 @@ function handlePanChange(trackId, value) {
         }
         
         saveToHistory();
+        markProjectAsModified();
         render();
     }
 }
@@ -936,6 +1897,7 @@ function handleMasterVolumeChange(value) {
     state.masterVolume = parseInt(value);
     updateMasterGain();
     saveToHistory();
+    markProjectAsModified();
     render();
 }
 
@@ -943,6 +1905,7 @@ function toggleMasterMute() {
     state.masterMute = !state.masterMute;
     updateMasterGain();
     saveToHistory();
+    markProjectAsModified();
     render();
 }
 
@@ -970,6 +1933,7 @@ function toggleSolo(trackId) {
     });
     
     saveToHistory();
+    markProjectAsModified();
     render();
 }
 
@@ -994,6 +1958,7 @@ function toggleMute(trackId) {
     }
     
     saveToHistory();
+    markProjectAsModified();
     render();
 }
 
@@ -1139,44 +2104,52 @@ function formatPan(value) {
 // PROJECT MANAGEMENT
 // ========================================
 
-function loadProjectsFromLocalStorage() {
-    try {
-        const saved = localStorage.getItem('multitrack_projects');
-        if (saved) {
-            const projects = JSON.parse(saved);
-            // Marca todos como vindo do localStorage
-            projects.forEach(p => {
-                if (!p.source) p.source = 'localStorage';
-            });
-            state.savedProjects = projects;
-            return projects;
-        }
-    } catch (err) {
-        console.error('Error loading projects:', err);
-    }
-    return [];
-}
 
-function saveProjectsToLocalStorage() {
-    try {
-        const dataString = JSON.stringify(state.savedProjects);
-        
-        // Verifica tamanho (localStorage tem limite de ~5-10MB)
-        const sizeInMB = new Blob([dataString]).size / (1024 * 1024);
-        
-        if (sizeInMB > 5) {
-            console.warn(`⚠️ Dados muito grandes (${sizeInMB.toFixed(2)}MB). Pode falhar.`);
+
+
+async function copyAudioFilesToProjectFolder(projectFolderHandle, tracks) {
+    const copiedFiles = [];
+
+    for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
+        updateLoadingProgress(i + 1, tracks.length, `Copiando ${track.name}...`);
+
+        try {
+            // Pega o arquivo original da memória
+            if (!track.originalFile) {
+                console.warn(`Track ${track.name} não tem arquivo original`);
+                continue;
+            }
+
+            // Cria nome de arquivo único
+            const filename = `track_${track.id}_${track.originalFile.name}`;
+
+            // Cria/sobrescreve arquivo na pasta do projeto
+            const fileHandle = await projectFolderHandle.getFileHandle(filename, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(track.originalFile);
+            await writable.close();
+
+            copiedFiles.push({
+                trackId: track.id,
+                filename: filename
+            });
+
+            console.log(`✅ Copiado: ${filename}`);
+
+        } catch (err) {
+            console.error(`❌ Erro ao copiar ${track.name}:`, err);
         }
-        
-        localStorage.setItem('multitrack_projects', dataString);
-        console.log(`✅ Projetos salvos no localStorage (${sizeInMB.toFixed(2)}MB)`);
-    } catch (err) {
-        console.error('❌ Erro ao salvar no localStorage:', err);
-        
-        // Lança o erro para ser tratado na função que chamou
-        throw new Error('localStorage cheio ou indisponível');
+
+        await new Promise(resolve => setTimeout(resolve, 100));
     }
+
+    return copiedFiles;
 }
+// ========================================
+// PASSO 8: SUBSTITUA COMPLETAMENTE saveCurrentProject()
+// Local: Linha ~890
+// ========================================
 
 async function saveCurrentProject() {
     if (state.tracks.length === 0) {
@@ -1184,29 +2157,334 @@ async function saveCurrentProject() {
         return;
     }
 
+    let projectName;
+    
+    // Mobile/Tablet: sempre pede nome
+    if (!supportsFileSystem) {
+        projectName = await showPrompt(
+            'Nome do projeto:', 
+            state.currentProject?.name || `Projeto ${Date.now()}`
+        );
+        
+        if (!projectName) return;
+        
+        // Atualiza nome antes de salvar
+        if (state.currentProject) {
+            state.currentProject.name = projectName;
+        }
+    } else {
+        // Desktop: usa nome existente ou pede novo
+        if (state.currentProject) {
+            projectName = state.currentProject.name;
+        } else {
+            projectName = await showPrompt(
+                'Nome do projeto:', 
+                `Projeto ${state.savedProjects.length + 1}`
+            );
+            
+            if (!projectName) return;
+        }
+    }
+
+    await saveCurrentProjectWithName(projectName);
+}
+
+
+async function saveCurrentProjectWithName(projectName) {
+    console.log('🔍 Salvando projeto:', projectName);
+    console.log('   - Modo:', state.storageMode);
+    
+    showLoadingOverlay();
+    updateLoadingProgress(1, 1, 'Salvando projeto...');
+    
+    // ========== MODO GOOGLE DRIVE ==========
+    if (state.storageMode === 'drive' && state.googleDriveConnected) {
+        try {
+            // Prepara dados com áudios em base64
+            const tracksWithAudio = await Promise.all(state.tracks.map(async (t) => {
+                let audioData = t.audioData;
+                if (!audioData && t.originalFile) {
+                    audioData = await fileToBase64(t.originalFile);
+                }
+                return {
+                    id: t.id,
+                    name: t.name,
+                    volume: t.volume,
+                    pan: t.pan,
+                    solo: t.solo,
+                    mute: t.mute,
+                    color: t.color,
+                    audioData: audioData
+                };
+            }));
+            
+            const projectData = {
+                id: state.currentProject?.id || Date.now(),
+                name: projectName,
+                tracks: tracksWithAudio,
+                markers: [...state.markers],
+                markerShortcuts: {...state.markerShortcuts},
+                duration: state.duration,
+                masterVolume: state.masterVolume,
+                masterMute: state.masterMute,
+                bpm: state.bpm,
+                key: state.key,
+                fadeInTime: state.fadeInTime,
+                fadeOutTime: state.fadeOutTime,
+                createdAt: state.currentProject?.createdAt || new Date().toLocaleString('pt-BR'),
+                updatedAt: new Date().toLocaleString('pt-BR'),
+                driveFileId: state.currentProject?.driveFileId
+            };
+            
+            const savedProject = await saveProjectToDrive(projectData);
+            
+            // Atualiza lista local
+            if (state.currentProject) {
+                const index = state.savedProjects.findIndex(p => p.id === state.currentProject.id);
+                if (index !== -1) {
+                    state.savedProjects[index] = savedProject;
+                } else {
+                    state.savedProjects.push(savedProject);
+                }
+            } else {
+                state.savedProjects.push(savedProject);
+            }
+            
+            state.currentProject = savedProject;
+            markProjectAsSaved();
+            
+            hideLoadingOverlay();
+            showAlert(`✅ Projeto salvo no Google Drive!\n\n☁️ Sincronizado às ${state.lastSyncTime}`);
+            render();
+            return;
+            
+        } catch (err) {
+            console.error('❌ Erro ao salvar no Drive:', err);
+            hideLoadingOverlay();
+            
+            const shouldFallback = await showConfirm(
+                '❌ Erro ao salvar no Google Drive.\n\n' +
+                'Deseja exportar como arquivo .mtp local?'
+            );
+            
+            if (shouldFallback) {
+                exportProjectAsFileFallback();
+            }
+            return;
+        }
+    }
+    
+// ========== MODO PASTA LOCAL ==========
+if (supportsFileSystem && libraryFolderHandle) {
+    try {
+        // Verifica se ainda tem acesso à pasta
+        const hasPermission = await verifyPermission(libraryFolderHandle);
+        if (!hasPermission) {
+            hideLoadingOverlay();
+            showAlert(
+                '⚠️ Sem permissão para acessar a pasta.\n\n' +
+                'Selecione a pasta novamente nas Settings.'
+            );
+            return;
+        }
+        
+        // Cria nome único para pasta do projeto
+        const safeName = projectName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        const timestamp = Date.now();
+        const folderName = `${safeName}_${timestamp}`;
+        
+        let projectFolder;
+        
+        // Se é atualização de projeto existente
+        if (state.currentProject?.folderName) {
+            try {
+                projectFolder = await libraryFolderHandle.getDirectoryHandle(
+                    state.currentProject.folderName
+                );
+                console.log('✅ Atualizando projeto existente');
+            } catch {
+                // Pasta não existe, cria nova
+                projectFolder = await libraryFolderHandle.getDirectoryHandle(
+                    folderName, 
+                    { create: true }
+                );
+                console.log('✅ Criando nova pasta:', folderName);
+            }
+        } else {
+            // Novo projeto - cria pasta
+            projectFolder = await libraryFolderHandle.getDirectoryHandle(
+                folderName, 
+                { create: true }
+            );
+            console.log('✅ Criando novo projeto:', folderName);
+        }
+        
+        // Copia arquivos de áudio
+        const copiedFiles = await copyAudioFilesToProjectFolder(projectFolder, state.tracks);
+        
+        // Prepara dados do projeto (SEM audioData)
+        const tracksData = state.tracks.map((t, index) => {
+            const copiedFile = copiedFiles.find(cf => cf.trackId === t.id);
+            return {
+                id: t.id,
+                name: t.name,
+                volume: t.volume,
+                pan: t.pan,
+                solo: t.solo,
+                mute: t.mute,
+                color: t.color,
+                filename: copiedFile ? copiedFile.filename : null
+            };
+        });
+        
+        const projectData = {
+            id: state.currentProject?.id || Date.now(),
+            name: projectName,
+            tracks: tracksData,
+            markers: [...state.markers],
+            markerShortcuts: {...state.markerShortcuts},
+            duration: state.duration,
+            masterVolume: state.masterVolume,
+            masterMute: state.masterMute,
+            bpm: state.bpm,
+            key: state.key,
+            fadeInTime: state.fadeInTime,
+            fadeOutTime: state.fadeOutTime,
+            createdAt: state.currentProject?.createdAt || new Date().toLocaleString('pt-BR'),
+            updatedAt: new Date().toLocaleString('pt-BR'),
+            folderName: state.currentProject?.folderName || folderName,
+            source: 'library'
+        };
+        
+        // Salva projeto.json
+        const jsonHandle = await projectFolder.getFileHandle('projeto.json', { create: true });
+        const writable = await jsonHandle.createWritable();
+        await writable.write(JSON.stringify(projectData, null, 2));
+        await writable.close();
+        
+        // Atualiza state
+        if (state.currentProject) {
+            const index = state.savedProjects.findIndex(p => p.id === state.currentProject.id);
+            if (index !== -1) {
+                state.savedProjects[index] = projectData;
+            } else {
+                state.savedProjects.push(projectData);
+            }
+        } else {
+            state.savedProjects.push(projectData);
+        }
+        
+        state.currentProject = projectData;
+        markProjectAsSaved();
+        
+        hideLoadingOverlay();
+        showAlert(`✅ Projeto salvo na biblioteca!\n\n📁 Pasta: ${state.libraryPath}`);
+        render();
+        console.log('✅ Projeto salvo com sucesso');
+        return;
+        
+    } catch (err) {
+        console.error('❌ Erro ao salvar na pasta local:', err);
+        hideLoadingOverlay();
+        
+        const shouldFallback = await showConfirm(
+            '❌ Erro ao salvar na pasta local.\n\n' +
+            'Deseja exportar como arquivo .mtp?'
+        );
+        
+        if (shouldFallback) {
+            exportProjectAsFileFallback();
+        }
+        return;
+    }
+}
+}
+
+async function ensureLibraryAccess() {
+    // Se já tem handle, retorna true
+    if (libraryFolderHandle) {
+        return true;
+    }
+    
+    // Se tem path salvo mas perdeu handle, tenta recuperar
+    if (state.libraryPath) {
+        const shouldReselect = await showConfirm(
+            `📁 Biblioteca configurada: ${state.libraryPath}\n\nMas precisamos de permissão novamente.\n\nAbrir seletor de pasta?`
+        );
+        
+        if (shouldReselect) {
+            return await setupLibraryFolder();
+        }
+    }
+    
+    return false;
+}
+// ========================================
+// SALVAR COMO (NOVA CÓPIA)
+// ========================================
+
+async function saveProjectAs() {
+    if (state.tracks.length === 0) {
+        showAlert('Adicione tracks antes de salvar o projeto');
+        return;
+    }
+
     const projectName = await showPrompt(
-        'Nome do projeto:', 
-        state.currentProject?.name || `Projeto ${state.savedProjects.length + 1}`
+        'Nome do novo projeto:', 
+        `${state.currentProject?.name || 'Projeto'} - Cópia`
     );
     if (!projectName) return;
 
-    showLoadingOverlay();
-    updateLoadingProgress(1, 1, 'Salvando projeto...');
+    // Temporariamente remove referência ao projeto atual
+    const tempProject = state.currentProject;
+    state.currentProject = null;
+    // TESTE - ADICIONE ANTES DE saveCurrentProjectWithName()
+window.testLibrary = function() {
+    console.log('📊 Estado da Biblioteca:');
+    console.log('   - supportsFileSystem:', supportsFileSystem);
+    console.log('   - libraryFolderHandle:', libraryFolderHandle);
+    console.log('   - state.libraryPath:', state.libraryPath);
+    console.log('   - state.tracks.length:', state.tracks.length);
+    
+    if (state.tracks.length > 0) {
+        console.log('   - track[0].originalFile:', state.tracks[0].originalFile);
+    }
+};
+    // Salva como novo
+    await saveCurrentProjectWithName(projectName);
+    
+    // Não restaura o antigo (agora estamos no novo)
+}
 
-    const tracksData = state.tracks.map(t => ({
-        id: t.id,
-        name: t.name,
-        volume: t.volume,
-        pan: t.pan,
-        solo: t.solo,
-        mute: t.mute,
-        color: t.color,
-        audioData: t.audioData
+// NOVA FUNÇÃO - Exporta projeto como fallback (mobile)
+async function exportProjectAsFileFallback() {
+    showLoadingOverlay();
+    updateLoadingProgress(1, 1, 'Exportando projeto completo...');
+
+    // ✅ AGORA SALVA OS ÁUDIOS EM BASE64
+    const tracksData = await Promise.all(state.tracks.map(async (t) => {
+        let audioData = t.audioData; // Se já tem base64
+        
+        // Se não tem base64, converte do arquivo
+        if (!audioData && t.originalFile) {
+            audioData = await fileToBase64(t.originalFile);
+        }
+        
+        return {
+            id: t.id,
+            name: t.name,
+            volume: t.volume,
+            pan: t.pan,
+            solo: t.solo,
+            mute: t.mute,
+            color: t.color,
+            audioData: audioData  // ✅ INCLUI OS ÁUDIOS
+        };
     }));
 
     const projectData = {
         id: state.currentProject?.id || Date.now(),
-        name: projectName,
+        name: state.currentProject?.name || 'Projeto',
         tracks: tracksData,
         markers: [...state.markers],
         markerShortcuts: {...state.markerShortcuts},
@@ -1218,259 +2496,414 @@ async function saveCurrentProject() {
         fadeInTime: state.fadeInTime,
         fadeOutTime: state.fadeOutTime,
         createdAt: state.currentProject?.createdAt || new Date().toLocaleString('pt-BR'),
-        updatedAt: new Date().toLocaleString('pt-BR')
+        updatedAt: new Date().toLocaleString('pt-BR'),
+        source: 'mobile'
     };
 
-    // MODO DESKTOP - Salva em pasta
-    if (supportsFileSystem && projectsLibraryHandle) {
-        try {
-            const folderName = projectName.replace(/[<>:"/\\|?*]/g, '_');
-            const projectFolder = await projectsLibraryHandle.getDirectoryHandle(
-                folderName,
-                { create: true }
-            );
-
-            const fileHandle = await projectFolder.getFileHandle('projeto.json', { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(JSON.stringify(projectData, null, 2));
-            await writable.close();
-
-            projectData.folderName = folderName;
-            projectData.source = 'folder';
-            
-            if (state.currentProject) {
-                const index = state.savedProjects.findIndex(p => p.id === state.currentProject.id);
-                if (index !== -1) {
-                    state.savedProjects[index] = projectData;
-                } else {
-                    state.savedProjects.push(projectData);
-                }
-            } else {
-                state.savedProjects.push(projectData);
-            }
-
-            state.currentProject = projectData;
-            
-            // Tenta salvar no localStorage também (sem bloquear se falhar)
-            try {
-                saveProjectsToLocalStorage();
-            } catch (lsErr) {
-                console.warn('Aviso: Não foi possível salvar no localStorage:', lsErr);
-            }
-            
-            hideLoadingOverlay();
-            showAlert(`✅ Projeto salvo na pasta: ${projectsLibraryHandle.name}/${folderName}`);
-            render();
-            return;
-        } catch (err) {
-            console.error('Erro ao salvar na pasta:', err);
-            hideLoadingOverlay();
-            
-            // Oferece exportar como alternativa
-            const shouldExport = await showConfirm(
-                '❌ Erro ao salvar na pasta.\n\nDeseja exportar o projeto como arquivo .mtp?'
-            );
-            
-            if (shouldExport) {
-                exportProjectAsFile(projectData);
-            }
-            return;
-        }
-    }
-
-    // MODO MOBILE/FALLBACK - Tenta salvar no localStorage
-    projectData.source = 'localStorage';
-    
-    if (state.currentProject) {
-        const index = state.savedProjects.findIndex(p => p.id === state.currentProject.id);
-        if (index !== -1) {
-            state.savedProjects[index] = projectData;
-        } else {
-            state.savedProjects.push(projectData);
-        }
-    } else {
-        state.savedProjects.push(projectData);
-    }
-
-    state.currentProject = projectData;
-    
-    // Tenta salvar no localStorage
     try {
-        saveProjectsToLocalStorage();
+        const jsonString = JSON.stringify(projectData, null, 2);
+        const blob = new Blob([jsonString], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${projectData.name}.mtp`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        // Adiciona à biblioteca local
+        state.savedProjects.push(projectData);
+        state.currentProject = projectData;
+        markProjectAsSaved();
+
         hideLoadingOverlay();
-        
-        // Pergunta se quer baixar arquivo .mtp também
-        const shouldDownload = await showConfirm(
-            '✅ Projeto salvo no navegador!\n\nDeseja baixar uma cópia (.mtp) como backup?'
-        );
-        
-        if (shouldDownload) {
-            exportProjectAsFile(projectData);
-        }
-        
+        showAlert('✅ Projeto completo exportado!\n\n📱 Arquivo salvo nos Downloads.\n\nProjeto adicionado à biblioteca local.');
         render();
-    } catch (lsErr) {
-        console.error('Erro no localStorage:', lsErr);
+        
+    } catch (err) {
         hideLoadingOverlay();
-        
-        // Se falhou, oferece exportar
-        const shouldExport = await showConfirm(
-            '⚠️ Erro ao salvar no navegador (projeto muito grande).\n\nDeseja exportar como arquivo .mtp?'
-        );
-        
-        if (shouldExport) {
-            exportProjectAsFile(projectData);
-        } else {
-            showAlert('❌ Projeto não foi salvo! Recomendamos exportar para não perder o trabalho.');
-        }
+        console.error('❌ Erro ao exportar:', err);
+        showAlert(`❌ Erro: ${err.message}`);
     }
 }
+// ========================================
+// PASSO 9: SUBSTITUA COMPLETAMENTE loadProject()
+// Local: Linha ~1050
+// ========================================
 
-// NOVA FUNÇÃO AUXILIAR - Adicione logo após saveCurrentProject
-function exportProjectAsFile(projectData) {
-    const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${projectData.name}.mtp`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showAlert('📥 Projeto exportado como arquivo .mtp!');
-}
 async function loadProject(project) {
-    if (!projectsLibraryHandle && project.folderName) {
-        showAlert('Pasta de projetos não selecionada. Configure a biblioteca primeiro.');
-        return;
-    }
-
     showLoadingOverlay();
-    
+
     try {
         let projectData = project;
-        
-        // Se o projeto veio da pasta, recarrega para ter dados atualizados
-        if (project.folderName) {
-            const projectFolder = await projectsLibraryHandle.getDirectoryHandle(project.folderName);
+
+        // ========== CARREGA DA BIBLIOTECA (PASTA) ==========
+        if (project.source === 'library' && project.folderName && libraryFolderHandle) {
+            // Abre pasta do projeto
+            const projectFolder = await libraryFolderHandle.getDirectoryHandle(project.folderName);
+
+            // Lê projeto.json
             const fileHandle = await projectFolder.getFileHandle('projeto.json');
             const file = await fileHandle.getFile();
             const text = await file.text();
             projectData = JSON.parse(text);
             projectData.folderName = project.folderName;
-        }
-        
-        state.currentProject = projectData;
-        state.markers = [...projectData.markers];
-        state.markerShortcuts = {...(projectData.markerShortcuts || {})};
-        state.duration = projectData.duration;
-        state.masterVolume = projectData.masterVolume;
-        state.masterMute = projectData.masterMute || false;
-        state.bpm = projectData.bpm || 120;
-        state.key = projectData.key || 'C';
-        state.fadeInTime = projectData.fadeInTime || 0.5;
-        state.fadeOutTime = projectData.fadeOutTime || 1.5;
-        
-        updateMasterGain();
+            projectData.source = 'library';
 
-        const newTracks = [];
-        
-        for (let i = 0; i < projectData.tracks.length; i++) {
-            const trackData = projectData.tracks[i];
-            updateLoadingProgress(i + 1, projectData.tracks.length, trackData.name);
+            // Restaura configurações
+            state.currentProject = projectData;
+            state.markers = [...projectData.markers];
+            state.markerShortcuts = {...(projectData.markerShortcuts || {})};
+            state.duration = projectData.duration;
+            state.masterVolume = projectData.masterVolume;
+            state.masterMute = projectData.masterMute || false;
+            state.bpm = projectData.bpm || 120;
+            state.key = projectData.key || 'C';
+            state.fadeInTime = projectData.fadeInTime || 0.5;
+            state.fadeOutTime = projectData.fadeOutTime || 1.5;
 
-          try {
-    const audioElement = await base64ToAudioElement(trackData.audioData);
-   const source = audioContext.createMediaElementSource(audioElement);
-const gainNode = audioContext.createGain();
-const panNode = audioContext.createStereoPanner();
-const analyserNode = audioContext.createAnalyser();
+            updateMasterGain();
 
-analyserNode.fftSize = 256;
-analyserNode.smoothingTimeConstant = 0.8;
+            const newTracks = [];
 
-// ROTEAMENTO: source -> panNode -> gainNode -> analyser -> master
-source.connect(panNode);
-panNode.connect(gainNode);
-gainNode.connect(analyserNode);
-analyserNode.connect(masterGainNode);
+            // Carrega cada track
+            for (let i = 0; i < projectData.tracks.length; i++) {
+                const trackData = projectData.tracks[i];
+                updateLoadingProgress(i + 1, projectData.tracks.length, trackData.name);
 
-// Força stereo
-source.channelCount = 2;
-source.channelCountMode = 'explicit';
-source.channelInterpretation = 'speakers';
-                const track = {
-                    id: trackData.id,
-                    name: trackData.name,
-                    volume: trackData.volume,
-                    pan: trackData.pan,
-                    solo: trackData.solo,
-                    mute: trackData.mute,
-                    color: trackData.color,
-                    audioData: trackData.audioData,
-                    audioElement: audioElement,
-                    gainNode: gainNode,
-                    panNode: panNode,
-                    sourceNode: source,
-                    analyserNode: analyserNode,
-                    vuLevel: 0,
-                    vuPeak: 0,
-                    vuClip: false
-                };
-
-                gainNode.gain.value = track.volume / 100;
-                panNode.pan.value = track.pan;
-
-                audioElement.addEventListener('timeupdate', () => {
-                    if (state.isPlaying) state.currentTime = audioElement.currentTime;
-                });
-
-                audioElement.addEventListener('ended', () => {
-                    if (state.isPlaying) {
-                        const allEnded = state.tracks.every(t => 
-                            !t.audioElement || t.audioElement.ended || t.audioElement.paused
-                        );
-                        if (allEnded) {
-                            state.isPlaying = false;
-                            stopBPMPulse();
-                            render();
-                        }
+                try {
+                    // Carrega arquivo de áudio da pasta
+                    if (!trackData.filename) {
+                        console.error(`Track ${trackData.name} sem filename`);
+                        continue;
                     }
-                });
 
-                newTracks.push(track);
-            } catch (error) {
-                console.error('Error loading track:', trackData.name, error);
+                    const audioFileHandle = await projectFolder.getFileHandle(trackData.filename);
+                    const audioFile = await audioFileHandle.getFile();
+
+                    // Cria elemento de áudio
+                    const audioElement = await createAudioElement(audioFile);
+
+                    // Cria nodes de áudio
+                    const source = audioContext.createMediaElementSource(audioElement);
+                    const gainNode = audioContext.createGain();
+                    const panNode = audioContext.createStereoPanner();
+                    const analyserNode = audioContext.createAnalyser();
+
+                    analyserNode.fftSize = 256;
+                    analyserNode.smoothingTimeConstant = 0.8;
+
+                    // Roteamento
+                    source.connect(panNode);
+                    panNode.connect(gainNode);
+                    gainNode.connect(analyserNode);
+                    analyserNode.connect(masterGainNode);
+
+                    // Força stereo
+                    source.channelCount = 2;
+                    source.channelCountMode = 'explicit';
+                    source.channelInterpretation = 'speakers';
+
+                    const track = {
+                        id: trackData.id,
+                        name: trackData.name,
+                        volume: trackData.volume,
+                        pan: trackData.pan,
+                        solo: trackData.solo,
+                        mute: trackData.mute,
+                        color: trackData.color,
+                        originalFile: audioFile,  // ← Salva referência ao arquivo
+                        audioElement: audioElement,
+                        gainNode: gainNode,
+                        panNode: panNode,
+                        sourceNode: source,
+                        analyserNode: analyserNode,
+                        vuLevel: 0,
+                        vuPeak: 0,
+                        vuClip: false
+                    };
+
+                    gainNode.gain.value = track.volume / 100;
+                    panNode.pan.value = track.pan;
+
+                    audioElement.addEventListener('timeupdate', () => {
+                        if (state.isPlaying) state.currentTime = audioElement.currentTime;
+                    });
+
+                    audioElement.addEventListener('ended', () => {
+                        if (state.isPlaying) {
+                            const allEnded = state.tracks.every(t =>
+                                !t.audioElement || t.audioElement.ended || t.audioElement.paused
+                            );
+                            if (allEnded) {
+                                state.isPlaying = false;
+                                stopBPMPulse();
+                                render();
+                            }
+                        }
+                    });
+
+                    newTracks.push(track);
+
+                } catch (error) {
+                    console.error('Erro ao carregar track:', trackData.name, error);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 200));
             }
-            await new Promise(resolve => setTimeout(resolve, 200));
+
+            state.tracks = newTracks;
+            state.currentTime = 0;
+            state.isPlaying = false;
+            state.activeTab = 'mixer';
+
+            history = [];
+            historyIndex = -1;
+            saveToHistory();
+
+            hideLoadingOverlay();
+            render();
+            return;
         }
 
-        state.tracks = newTracks;
-        state.currentTime = 0;
-        state.isPlaying = false;
-        state.activeTab = 'mixer';
-        
-        history = [];
-        historyIndex = -1;
-        saveToHistory();
-        
-        hideLoadingOverlay();
-        render();
+        // ========== CARREGA DE .MTP IMPORTADO (COM BASE64) ==========
+        // Fallback para arquivos .mtp que ainda têm audioData
+        if (projectData.tracks && projectData.tracks[0]?.audioData) {
+            state.currentProject = projectData;
+            state.markers = [...projectData.markers];
+            state.markerShortcuts = {...(projectData.markerShortcuts || {})};
+            state.duration = projectData.duration;
+            state.masterVolume = projectData.masterVolume;
+            state.masterMute = projectData.masterMute || false;
+            state.bpm = projectData.bpm || 120;
+            state.key = projectData.key || 'C';
+            state.fadeInTime = projectData.fadeInTime || 0.5;
+            state.fadeOutTime = projectData.fadeOutTime || 1.5;
+
+            updateMasterGain();
+
+            const newTracks = [];
+
+            for (let i = 0; i < projectData.tracks.length; i++) {
+                const trackData = projectData.tracks[i];
+                updateLoadingProgress(i + 1, projectData.tracks.length, trackData.name);
+
+                try {
+                    const audioElement = await base64ToAudioElement(trackData.audioData);
+                    const source = audioContext.createMediaElementSource(audioElement);
+                    const gainNode = audioContext.createGain();
+                    const panNode = audioContext.createStereoPanner();
+                    const analyserNode = audioContext.createAnalyser();
+
+                    analyserNode.fftSize = 256;
+                    analyserNode.smoothingTimeConstant = 0.8;
+
+                    source.connect(panNode);
+                    panNode.connect(gainNode);
+                    gainNode.connect(analyserNode);
+                    analyserNode.connect(masterGainNode);
+
+                    source.channelCount = 2;
+                    source.channelCountMode = 'explicit';
+                    source.channelInterpretation = 'speakers';
+
+                    const track = {
+                        id: trackData.id,
+                        name: trackData.name,
+                        volume: trackData.volume,
+                        pan: trackData.pan,
+                        solo: trackData.solo,
+                        mute: trackData.mute,
+                        color: trackData.color,
+                        audioData: trackData.audioData,  // Mantém para compatibilidade
+                        audioElement: audioElement,
+                        gainNode: gainNode,
+                        panNode: panNode,
+                        sourceNode: source,
+                        analyserNode: analyserNode,
+                        vuLevel: 0,
+                        vuPeak: 0,
+                        vuClip: false
+                    };
+
+                    gainNode.gain.value = track.volume / 100;
+                    panNode.pan.value = track.pan;
+
+                    audioElement.addEventListener('timeupdate', () => {
+                        if (state.isPlaying) state.currentTime = audioElement.currentTime;
+                    });
+
+                    audioElement.addEventListener('ended', () => {
+                        if (state.isPlaying) {
+                            const allEnded = state.tracks.every(t =>
+                                !t.audioElement || t.audioElement.ended || t.audioElement.paused
+                            );
+                            if (allEnded) {
+                                state.isPlaying = false;
+                                stopBPMPulse();
+                                render();
+                            }
+                        }
+                    });
+
+                    newTracks.push(track);
+
+                } catch (error) {
+                    console.error('Erro ao carregar track:', trackData.name, error);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+
+            state.tracks = newTracks;
+            state.currentTime = 0;
+            state.isPlaying = false;
+            state.activeTab = 'mixer';
+
+            history = [];
+            historyIndex = -1;
+            saveToHistory();
+
+            hideLoadingOverlay();
+            render();
+            markProjectAsSaved();
+        }
+
     } catch (err) {
         console.error('Erro ao carregar projeto:', err);
         hideLoadingOverlay();
-        showAlert('Erro ao carregar projeto: ' + err.message);
+        showAlert('❌ Erro ao carregar projeto: ' + err.message);
+    }
+}
+
+async function exportProjectFromLibrary(projectId, event) {
+    event.stopPropagation();
+    
+    const project = state.savedProjects.find(p => p.id === projectId);
+    if (!project) return;
+    
+    if (project.source !== 'library' || !project.folderName || !libraryFolderHandle) {
+        showAlert('❌ Só é possível exportar projetos da biblioteca local.');
+        return;
+    }
+    
+    showLoadingOverlay();
+    updateLoadingProgress(1, 1, 'Exportando projeto completo...');
+    
+    try {
+        // Abre pasta do projeto
+        const projectFolder = await libraryFolderHandle.getDirectoryHandle(project.folderName);
+        
+        // Lê projeto.json
+        const jsonHandle = await projectFolder.getFileHandle('projeto.json');
+        const jsonFile = await jsonHandle.getFile();
+        const jsonText = await jsonFile.text();
+        const projectData = JSON.parse(jsonText);
+        
+        // Carrega os arquivos de áudio como base64
+        const tracksWithAudio = [];
+        
+        for (let i = 0; i < projectData.tracks.length; i++) {
+            const track = projectData.tracks[i];
+            updateLoadingProgress(i + 1, projectData.tracks.length, `Carregando ${track.name}...`);
+            
+            if (track.filename) {
+                try {
+                    const audioHandle = await projectFolder.getFileHandle(track.filename);
+                    const audioFile = await audioHandle.getFile();
+                    const audioData = await fileToBase64(audioFile);
+                    
+                    tracksWithAudio.push({
+                        ...track,
+                        audioData: audioData,
+                        filename: undefined // Remove referência ao arquivo
+                    });
+                } catch (err) {
+                    console.error(`Erro ao carregar ${track.filename}:`, err);
+                }
+            }
+        }
+        
+        // Cria novo .mtp com áudios inclusos
+        const exportData = {
+            ...projectData,
+            tracks: tracksWithAudio,
+            source: 'mobile',
+            exportedAt: new Date().toLocaleString('pt-BR')
+        };
+        
+        // Download
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${project.name}.mtp`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        hideLoadingOverlay();
+        showAlert(`✅ Projeto exportado!\n\n📱 Agora você pode importar este .mtp no celular.`);
+        
+    } catch (err) {
+        console.error('Erro ao exportar:', err);
+        hideLoadingOverlay();
+        showAlert('❌ Erro ao exportar projeto.');
     }
 }
 
 async function deleteProject(projectId, event) {
     event.stopPropagation();
-    const confirmed = await showConfirm('Deseja realmente excluir este projeto?');
-    if (confirmed) {
+    
+    const project = state.savedProjects.find(p => p.id === projectId);
+    if (!project) return;
+    
+    const confirmed = await showConfirm(
+        `Deseja realmente excluir "${project.name}"?\n\n` +
+        (project.source === 'library' ? '⚠️ A pasta será deletada do seu computador!' : '')
+    );
+    
+    if (!confirmed) return;
+    
+    showLoadingOverlay();
+    updateLoadingProgress(1, 1, 'Deletando projeto...');
+    
+    try {
+        // Se é projeto da biblioteca (pasta física)
+        if (project.source === 'library' && project.folderName && libraryFolderHandle) {
+            try {
+                await libraryFolderHandle.removeEntry(project.folderName, { recursive: true });
+                console.log(`✅ Pasta "${project.folderName}" deletada do disco`);
+            } catch (err) {
+                console.error('❌ Erro ao deletar pasta:', err);
+                hideLoadingOverlay();
+                showAlert('❌ Erro ao deletar pasta do disco.\n\nVerifique as permissões.');
+                return;
+            }
+        }
+        
+        // Remove da lista
         state.savedProjects = state.savedProjects.filter(p => p.id !== projectId);
+        
+        // Atualiza localStorage (para projetos mobile/importados)
         saveProjectsToLocalStorage();
+        
+        // Se era o projeto atual, limpa
         if (state.currentProject?.id === projectId) {
             state.currentProject = null;
         }
+        
+        hideLoadingOverlay();
         render();
+        
+        showAlert(`✅ Projeto "${project.name}" excluído com sucesso!`);
+        
+    } catch (err) {
+        console.error('❌ Erro ao deletar projeto:', err);
+        hideLoadingOverlay();
+        showAlert('❌ Erro ao deletar projeto.');
     }
 }
 
@@ -1530,21 +2963,47 @@ async function handleProjectImport(event) {
         const text = await file.text();
         const projectData = JSON.parse(text);
         
-        // Gera novo ID para evitar conflito
+        // Validação: verifica se tem audioData
+        const hasAudioData = projectData.tracks && 
+                            projectData.tracks.length > 0 && 
+                            projectData.tracks[0].audioData;
+        
+        const hasFilename = projectData.tracks && 
+                           projectData.tracks.length > 0 && 
+                           projectData.tracks[0].filename;
+        
+        if (!hasAudioData && !hasFilename) {
+            hideLoadingOverlay();
+            showAlert('❌ Arquivo .mtp inválido!\n\nO projeto não contém dados de áudio.');
+            event.target.value = '';
+            return;
+        }
+        
+        // Se tem filename mas não audioData (projeto desktop)
+        if (hasFilename && !hasAudioData) {
+            hideLoadingOverlay();
+            showAlert(
+                '⚠️ Este projeto foi salvo no modo Desktop.\n\n' +
+                'Ele contém apenas referências aos arquivos, não os áudios completos.\n\n' +
+                'Para importar no celular:\n' +
+                '1. Abra o projeto no PC\n' +
+                '2. Use "Exportar Projeto" na biblioteca\n\n' +
+                'Isso criará um .mtp com áudios inclusos.'
+            );
+            event.target.value = '';
+            return;
+        }
+        
+        // Se chegou aqui, tem audioData (importável!)
         projectData.id = Date.now();
-        projectData.source = 'localStorage';
-        projectData.createdAt = new Date().toLocaleString('pt-BR');
-        projectData.updatedAt = new Date().toLocaleString('pt-BR');
+        projectData.source = 'imported';
+        projectData.importedAt = new Date().toLocaleString('pt-BR');
         
         // Adiciona à biblioteca
         state.savedProjects.push(projectData);
         
-        // Tenta salvar no localStorage
-        try {
-            saveProjectsToLocalStorage();
-        } catch (lsErr) {
-            console.warn('Não foi possível salvar no localStorage:', lsErr);
-        }
+        // Salva no localStorage
+        saveProjectsToLocalStorage();
         
         hideLoadingOverlay();
         
@@ -1552,16 +3011,60 @@ async function handleProjectImport(event) {
         state.activeTab = 'library';
         render();
         
-        showAlert(`✅ Projeto "${projectData.name}" importado para a biblioteca!\n\nClique nele para carregar.`);
+        showAlert(`✅ Projeto "${projectData.name}" importado!\n\nClique nele para carregar.`);
+        
     } catch (err) {
         console.error('Error importing project:', err);
         hideLoadingOverlay();
-        showAlert('❌ Erro ao importar projeto. Verifique se o arquivo .mtp é válido.');
+        showAlert('❌ Erro ao importar projeto.\n\nVerifique se o arquivo .mtp é válido.');
     }
     
     event.target.value = '';
 }
+async function handleMultipleProjectImport(event) {
+    const files = Array.from(event.target.files);
+    if (files.length === 0) return;
 
+    showLoadingOverlay();
+    
+    let importedCount = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        updateLoadingProgress(i + 1, files.length, `Importando ${file.name}...`);
+        
+        try {
+            const text = await file.text();
+            const projectData = JSON.parse(text);
+            
+            // Verifica se já existe (evita duplicatas)
+            const exists = state.savedProjects.find(p => p.id === projectData.id);
+            if (!exists) {
+                projectData.source = 'imported';
+                projectData.updatedAt = new Date().toLocaleString('pt-BR');
+                state.savedProjects.push(projectData);
+                importedCount++;
+            }
+            
+        } catch (err) {
+            console.error(`Erro ao importar ${file.name}:`, err);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    hideLoadingOverlay();
+    
+    if (importedCount > 0) {
+        state.activeTab = 'library';
+        render();
+        showAlert(`✅ ${importedCount} projeto(s) importado(s) com sucesso!\n\nVeja na Biblioteca.`);
+    } else {
+        showAlert('⚠️ Nenhum projeto novo foi importado.\n\n(Projetos duplicados foram ignorados)');
+    }
+    
+    event.target.value = '';
+}
 // ========================================
 // EXPORT MIXDOWN
 // ========================================
@@ -1694,8 +3197,7 @@ function showPrompt(title, defaultValue = '') {
             <div class="modal-content">
                 <h3 class="modal-title">${title}</h3>
                 <div class="modal-body">
-                    <input type="text" class="modal-input" value="${defaultValue}" autofocus>
-                </div>
+<input type="text" class="modal-input" value="${defaultValue}">                </div>
                 <div class="modal-buttons">
                     <button class="modal-btn modal-btn-secondary" data-action="cancel">Cancelar</button>
                     <button class="modal-btn modal-btn-primary" data-action="confirm">OK</button>
@@ -2015,10 +3517,17 @@ function renderMixer() {
                         <i data-lucide="bookmark"></i>
                         <span>Add Marker</span>
                     </button>
-                    <button class="import-btn save-btn" ${state.tracks.length === 0 ? 'disabled' : ''}>
-                        <i data-lucide="save"></i>
-                        <span>Salvar</span>
-                    </button>
+                    <button class="import-btn save-btn ${state.isProjectModified ? 'modified' : ''} ${!state.currentProject && state.tracks.length > 0 ? 'new-project' : ''}" ${state.tracks.length === 0 ? 'disabled' : ''}>
+    <i data-lucide="save"></i>
+    <span>
+        ${!state.currentProject && state.tracks.length > 0 ? 'Salvar Novo Projeto' : 
+          state.isProjectModified ? 'Salvar *' : 'Salvar'}
+    </span>
+</button>
+<button class="import-btn save-as-btn" ${state.tracks.length === 0 ? 'disabled' : ''}>
+    <i data-lucide="copy"></i>
+    <span>Salvar Como...</span>
+</button>
                     <button class="import-btn export-btn" ${state.tracks.length === 0 ? 'disabled' : ''}>
                         <i data-lucide="download"></i>
                         <span>Export Mix</span>
@@ -2148,15 +3657,15 @@ function renderLibrary() {
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                         <h3 class="library-title">Projetos Salvos</h3>
                         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-    <button class="import-btn import-project-btn">
-        <i data-lucide="file-up"></i>
-        <span>Carregar .mtp</span>
-    </button>
-    <button class="import-btn load-folder-library-btn">
-        <i data-lucide="folder-open"></i>
-        <span>Carregar Pasta MP3</span>
-    </button>
-</div>
+                            <button class="import-btn import-project-btn" onclick="document.getElementById('multipleProjectImportInput').click()">
+                                <i data-lucide="files"></i>
+                                <span>Importar Projetos (.mtp)</span>
+                            </button>
+                            <button class="import-btn load-folder-library-btn">
+                                <i data-lucide="folder-open"></i>
+                                <span>Carregar Pasta MP3</span>
+                            </button>
+                        </div>
                     </div>
                     <div class="projects-list">
                         ${state.savedProjects.map(project => `
@@ -2170,9 +3679,16 @@ function renderLibrary() {
                                         ${project.tracks.length} tracks • ${project.markers?.length || 0} markers • BPM ${project.bpm} • ${project.updatedAt || project.createdAt}
                                     </div>
                                 </div>
-                                <button class="delete-btn" data-project-id="${project.id}">
-                                    <i data-lucide="trash-2"></i>
-                                </button>
+                                <div style="display: flex; gap: 0.25rem;">
+                                    ${project.source === 'library' ? `
+                                        <button class="export-project-btn" data-project-id="${project.id}" title="Exportar como .mtp completo">
+                                            <i data-lucide="download"></i>
+                                        </button>
+                                    ` : ''}
+                                    <button class="delete-btn" data-project-id="${project.id}">
+                                        <i data-lucide="trash-2"></i>
+                                    </button>
+                                </div>
                             </div>
                         `).join('')}
                     </div>
@@ -2191,25 +3707,175 @@ function renderSettings() {
                         <i data-lucide="folder"></i>
                         Biblioteca de Projetos
                     </h3>
+                    
+                    <!-- Seletor de Modo -->
                     <div class="settings-item">
-                        <label class="settings-label">Pasta de Projetos</label>
+                        <label class="settings-label">Modo de Armazenamento</label>
                         <p class="settings-description">
-                            Selecione uma pasta do seu computador onde os projetos serão salvos
+                            Escolha onde seus projetos serão salvos
                         </p>
-                        <div class="library-path-display">
-                            <i data-lucide="folder-open"></i>
-                            <div class="library-path-text ${!state.libraryPath ? 'not-selected' : ''}">
-                                ${state.libraryPath ? `<strong>${state.libraryPath}</strong>` : 'Nenhuma pasta selecionada'}
+                        <select class="modal-select" id="storage-mode-select">
+                            <option value="local" ${state.storageMode === 'local' ? 'selected' : ''}>
+                                📱 Portátil (Download/Upload .mtp)
+                            </option>
+                            <option value="folder" ${state.storageMode === 'folder' ? 'selected' : ''} ${!supportsFileSystem ? 'disabled' : ''}>
+                                💻 Pasta Local ${!supportsFileSystem ? '(Indisponível)' : ''}
+                            </option>
+                            <option value="drive" ${state.storageMode === 'drive' ? 'selected' : ''}>
+                                ☁️ Google Drive ${state.googleDriveConnected ? '(Conectado)' : ''}
+                            </option>
+                        </select>
+                        ${state.storageMode !== 'drive' && !state.googleDriveConnected ? `
+                            <p style="font-size: 0.75rem; color: #9ca3af; margin-top: 0.5rem;">
+                                💡 Selecione "Google Drive" para conectar sua conta
+                            </p>
+                        ` : ''}
+                    </div>
+                    
+                    <!-- Informações do modo atual -->
+                    <div class="settings-item" id="storage-info-container">
+                        ${renderStorageInfo()}
+                    </div>
+                </div>
+                
+                <!-- Google Drive Status -->
+                ${state.googleDriveConnected ? `
+                    <div class="settings-section">
+                        <h3 class="settings-section-title">
+                            <i data-lucide="cloud"></i>
+                            Status do Google Drive
+                        </h3>
+                        <div class="google-drive-status">
+                            <div class="status-item">
+                                <strong>Conta:</strong>
+                                <span>${state.googleDriveEmail}</span>
                             </div>
+                            <div class="status-item">
+                                <strong>Projetos na nuvem:</strong>
+                                <span>${state.savedProjects.filter(p => p.source === 'drive').length}</span>
+                            </div>
+                            ${state.lastSyncTime ? `
+                                <div class="status-item">
+                                    <strong>Última sincronização:</strong>
+                                    <span>${state.lastSyncTime}</span>
+                                </div>
+                            ` : ''}
                         </div>
-                        <button class="select-library-btn">
-                            <i data-lucide="folder-plus"></i>
-                            <span>${state.libraryPath ? 'Trocar Pasta' : 'Selecionar Pasta'}</span>
-                        </button>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap;">
+                            <button class="import-btn" onclick="loadProjectsFromDrive()">
+                                <i data-lucide="refresh-cw"></i>
+                                <span>Sincronizar Agora</span>
+                            </button>
+                            <button class="modal-btn modal-btn-secondary" onclick="disconnectGoogleDrive()">
+                                Desconectar
+                            </button>
+                        </div>
+                    </div>
+                ` : ''}
+                
+                <!-- Ajuda -->
+                <div class="settings-section">
+                    <h3 class="settings-section-title">
+                        <i data-lucide="info"></i>
+                        Sobre os Modos
+                    </h3>
+                    <div class="storage-mode-help">
+                        <div class="help-item">
+                            <strong>📱 Modo Portátil:</strong>
+                            <p>• Projetos salvos como arquivos .mtp</p>
+                            <p>• Download/upload manual</p>
+                            <p>• Funciona em qualquer dispositivo</p>
+                        </div>
+                        <div class="help-item">
+                            <strong>💻 Modo Pasta Local:</strong>
+                            <p>• Salvamento automático em pasta</p>
+                            <p>• Acesso rápido (só desktop)</p>
+                            <p>• Arquivos separados (fácil backup)</p>
+                        </div>
+                        <div class="help-item">
+                            <strong>☁️ Modo Google Drive:</strong>
+                            <p>• Salvamento na nuvem</p>
+                            <p>• Sincronização automática</p>
+                            <p>• Acesso de qualquer lugar</p>
+                            ${!state.googleDriveConnected ? `
+                                <p style="color: #fbbf24; margin-top: 0.5rem;">⚠️ Requer conexão com conta Google</p>
+                            ` : ''}
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
+    `;
+}
+// NOVA FUNÇÃO - Renderiza informações do modo de storage atual
+function renderStorageInfo() {
+    // MODO GOOGLE DRIVE
+    if (state.storageMode === 'drive') {
+        if (state.googleDriveConnected) {
+            return `
+                <label class="settings-label">Google Drive Conectado</label>
+                <div class="library-path-display" style="background: #059669;">
+                    <i data-lucide="cloud-check"></i>
+                    <div class="library-path-text">
+                        <strong>${state.googleDriveEmail}</strong>
+                    </div>
+                </div>
+                <p class="settings-description" style="color: #10b981; margin-top: 0.5rem;">
+                    ✅ ${state.savedProjects.filter(p => p.source === 'drive').length} projeto(s) na nuvem
+                </p>
+            `;
+        } else {
+            return `
+                <label class="settings-label">Google Drive</label>
+                <div class="library-path-display">
+                    <i data-lucide="cloud-off"></i>
+                    <div class="library-path-text">
+                        <strong>Conectando...</strong>
+                    </div>
+                </div>
+                <p class="settings-description" style="color: #9ca3af; margin-top: 0.5rem;">
+                    ⏳ Aguarde a conexão com o Google Drive
+                </p>
+            `;
+        }
+    }
+    
+    // MODO PASTA LOCAL
+    if (state.storageMode === 'folder' && supportsFileSystem && state.libraryPath) {
+        return `
+            <label class="settings-label">Pasta Atual</label>
+            <div class="library-path-display">
+                <i data-lucide="folder-open"></i>
+                <div class="library-path-text">
+                    <strong>${state.libraryPath}</strong>
+                </div>
+            </div>
+            <button class="select-library-btn">
+                <i data-lucide="folder-plus"></i>
+                <span>Trocar Pasta</span>
+            </button>
+            <p class="settings-description" style="margin-top: 0.5rem; color: #10b981;">
+                ✅ ${state.savedProjects.filter(p => p.source === 'library').length} projeto(s) na pasta local
+            </p>
+        `;
+    }
+    
+    // MODO PORTÁTIL
+    return `
+        <label class="settings-label">Modo Portátil Ativo</label>
+        <div class="library-path-display">
+            <i data-lucide="smartphone"></i>
+            <div class="library-path-text">
+                <strong>Download/Upload Manual</strong>
+            </div>
+        </div>
+        <p class="settings-description" style="margin-top: 0.5rem;">
+            📱 Use "Salvar" para baixar .mtp<br>
+            📂 Use "Importar .mtp" para carregar projetos
+        </p>
+        <p class="settings-description" style="color: #10b981;">
+            ✅ ${state.savedProjects.filter(p => p.source === 'mobile' || p.source === 'imported').length} projeto(s) importado(s)
+        </p>
     `;
 }
 
@@ -2217,249 +3883,248 @@ function renderSettings() {
 // DYNAMIC EVENT LISTENERS - PAN MELHORADO
 // ========================================
 
+// ========================================
+// DYNAMIC EVENT LISTENERS - VERSÃO COMPLETA ATUALIZADA
+// ========================================
+
 function attachDynamicEventListeners() {
-    // Faders (non-master)
-  // Faders (non-master) - COM SUPORTE TOUCH
-// Faders - OTIMIZADO PARA TABLET
-// Faders - TOUCH ISOLADO
-document.querySelectorAll('.fader-wrapper[data-track-id]').forEach(wrapper => {
-    let isDragging = false;
-    let startY = 0;
-    let startValue = 0;
-    const trackId = parseFloat(wrapper.dataset.trackId);
-    
-    const onMouseDown = (e) => {
-        e.stopPropagation();
-        isDragging = true;
-        const track = state.tracks.find(t => t.id === trackId);
-        startY = e.clientY;
-        startValue = track ? track.volume : 75;
-        wrapper.classList.add('dragging');
-        e.preventDefault();
-    };
-    
-    const onMouseMove = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        const deltaY = startY - e.clientY;
-        const sensitivity = 0.6; // Mais sensível
-        const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
-        handleVolumeChange(trackId, newValue);
-        e.preventDefault();
-    };
-    
-    const onMouseUp = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        isDragging = false;
-        wrapper.classList.remove('dragging');
-    };
-    
-    const onTouchStart = (e) => {
-        e.stopPropagation();
-        isDragging = true;
-        const track = state.tracks.find(t => t.id === trackId);
-        const touch = e.touches[0];
-        startY = touch.clientY;
-        startValue = track ? track.volume : 75;
-        wrapper.classList.add('dragging');
-        e.preventDefault();
-    };
-    
-    const onTouchMove = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        const touch = e.touches[0];
-        const deltaY = startY - touch.clientY;
-        const sensitivity = 0.6; // Mais sensível para tablet
-        const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
-        handleVolumeChange(trackId, newValue);
-        e.preventDefault();
-    };
-    
-    const onTouchEnd = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        isDragging = false;
-        wrapper.classList.remove('dragging');
-    };
-    
-    // Eventos LOCAIS
-    wrapper.addEventListener('mousedown', onMouseDown);
-    wrapper.addEventListener('mousemove', onMouseMove);
-    wrapper.addEventListener('mouseup', onMouseUp);
-    wrapper.addEventListener('mouseleave', onMouseUp);
-    
-    wrapper.addEventListener('touchstart', onTouchStart, { passive: false });
-    wrapper.addEventListener('touchmove', onTouchMove, { passive: false });
-    wrapper.addEventListener('touchend', onTouchEnd);
-    wrapper.addEventListener('touchcancel', onTouchEnd);
-});
+    // ========================================
+    // FADERS (NON-MASTER) - TOUCH ISOLADO
+    // ========================================
+    document.querySelectorAll('.fader-wrapper[data-track-id]').forEach(wrapper => {
+        let isDragging = false;
+        let startY = 0;
+        let startValue = 0;
+        const trackId = parseFloat(wrapper.dataset.trackId);
+        
+        const onMouseDown = (e) => {
+            e.stopPropagation();
+            isDragging = true;
+            const track = state.tracks.find(t => t.id === trackId);
+            startY = e.clientY;
+            startValue = track ? track.volume : 75;
+            wrapper.classList.add('dragging');
+            e.preventDefault();
+        };
+        
+        const onMouseMove = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            const deltaY = startY - e.clientY;
+            const sensitivity = 0.6;
+            const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
+            handleVolumeChange(trackId, newValue);
+            e.preventDefault();
+        };
+        
+        const onMouseUp = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            isDragging = false;
+            wrapper.classList.remove('dragging');
+        };
+        
+        const onTouchStart = (e) => {
+            e.stopPropagation();
+            isDragging = true;
+            const track = state.tracks.find(t => t.id === trackId);
+            const touch = e.touches[0];
+            startY = touch.clientY;
+            startValue = track ? track.volume : 75;
+            wrapper.classList.add('dragging');
+            e.preventDefault();
+        };
+        
+        const onTouchMove = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            const touch = e.touches[0];
+            const deltaY = startY - touch.clientY;
+            const sensitivity = 0.6;
+            const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
+            handleVolumeChange(trackId, newValue);
+            e.preventDefault();
+        };
+        
+        const onTouchEnd = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            isDragging = false;
+            wrapper.classList.remove('dragging');
+        };
+        
+        wrapper.addEventListener('mousedown', onMouseDown);
+        wrapper.addEventListener('mousemove', onMouseMove);
+        wrapper.addEventListener('mouseup', onMouseUp);
+        wrapper.addEventListener('mouseleave', onMouseUp);
+        
+        wrapper.addEventListener('touchstart', onTouchStart, { passive: false });
+        wrapper.addEventListener('touchmove', onTouchMove, { passive: false });
+        wrapper.addEventListener('touchend', onTouchEnd);
+        wrapper.addEventListener('touchcancel', onTouchEnd);
+    });
 
-    // Pan knobs - MELHORADO
-    // Pan knobs - COM SUPORTE TOUCH PARA TABLET
-// Pan knobs - OTIMIZADO PARA TABLET
-// Pan knobs - TOUCH ISOLADO
-document.querySelectorAll('.pan-knob-container[data-track-id]').forEach(container => {
-    let isDragging = false;
-    let startY = 0;
-    let startValue = 0;
-    const trackId = parseFloat(container.dataset.trackId);
-    
-    // MOUSE
-    const onMouseDown = (e) => {
-        e.stopPropagation();
-        isDragging = true;
-        const track = state.tracks.find(t => t.id === trackId);
-        startY = e.clientY;
-        startValue = track ? track.pan : 0;
-        container.classList.add('dragging');
-        e.preventDefault();
-    };
-    
-    const onMouseMove = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        const deltaY = startY - e.clientY;
-        const sensitivity = 0.004;
-        let newValue = startValue + deltaY * sensitivity;
+    // ========================================
+    // PAN KNOBS - TOUCH ISOLADO
+    // ========================================
+    document.querySelectorAll('.pan-knob-container[data-track-id]').forEach(container => {
+        let isDragging = false;
+        let startY = 0;
+        let startValue = 0;
+        const trackId = parseFloat(container.dataset.trackId);
         
-        if (Math.abs(newValue) < 0.08) newValue = 0;
-        newValue = Math.max(-1, Math.min(1, newValue));
+        const onMouseDown = (e) => {
+            e.stopPropagation();
+            isDragging = true;
+            const track = state.tracks.find(t => t.id === trackId);
+            startY = e.clientY;
+            startValue = track ? track.pan : 0;
+            container.classList.add('dragging');
+            e.preventDefault();
+        };
         
-        handlePanChange(trackId, newValue);
-        e.preventDefault();
-    };
-    
-    const onMouseUp = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        isDragging = false;
-        container.classList.remove('dragging');
-    };
-    
-    // TOUCH - ISOLADO POR ELEMENTO
-    const onTouchStart = (e) => {
-        e.stopPropagation();
-        isDragging = true;
-        const track = state.tracks.find(t => t.id === trackId);
-        const touch = e.touches[0];
-        startY = touch.clientY;
-        startValue = track ? track.pan : 0;
-        container.classList.add('dragging');
-        e.preventDefault();
-    };
-    
-    const onTouchMove = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        const touch = e.touches[0];
-        const deltaY = startY - touch.clientY;
-        const sensitivity = 0.006; // Mais sensível para tablet
-        let newValue = startValue + deltaY * sensitivity;
+        const onMouseMove = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            const deltaY = startY - e.clientY;
+            const sensitivity = 0.004;
+            let newValue = startValue + deltaY * sensitivity;
+            
+            if (Math.abs(newValue) < 0.08) newValue = 0;
+            newValue = Math.max(-1, Math.min(1, newValue));
+            
+            handlePanChange(trackId, newValue);
+            e.preventDefault();
+        };
         
-        if (Math.abs(newValue) < 0.08) newValue = 0;
-        newValue = Math.max(-1, Math.min(1, newValue));
+        const onMouseUp = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            isDragging = false;
+            container.classList.remove('dragging');
+        };
         
-        handlePanChange(trackId, newValue);
-        e.preventDefault();
-    };
-    
-    const onTouchEnd = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        isDragging = false;
-        container.classList.remove('dragging');
-    };
-    
-    // Eventos LOCAIS (não document)
-    container.addEventListener('mousedown', onMouseDown);
-    container.addEventListener('mousemove', onMouseMove);
-    container.addEventListener('mouseup', onMouseUp);
-    container.addEventListener('mouseleave', onMouseUp);
-    
-    container.addEventListener('touchstart', onTouchStart, { passive: false });
-    container.addEventListener('touchmove', onTouchMove, { passive: false });
-    container.addEventListener('touchend', onTouchEnd);
-    container.addEventListener('touchcancel', onTouchEnd);
-});
+        const onTouchStart = (e) => {
+            e.stopPropagation();
+            isDragging = true;
+            const track = state.tracks.find(t => t.id === trackId);
+            const touch = e.touches[0];
+            startY = touch.clientY;
+            startValue = track ? track.pan : 0;
+            container.classList.add('dragging');
+            e.preventDefault();
+        };
+        
+        const onTouchMove = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            const touch = e.touches[0];
+            const deltaY = startY - touch.clientY;
+            const sensitivity = 0.006;
+            let newValue = startValue + deltaY * sensitivity;
+            
+            if (Math.abs(newValue) < 0.08) newValue = 0;
+            newValue = Math.max(-1, Math.min(1, newValue));
+            
+            handlePanChange(trackId, newValue);
+            e.preventDefault();
+        };
+        
+        const onTouchEnd = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            isDragging = false;
+            container.classList.remove('dragging');
+        };
+        
+        container.addEventListener('mousedown', onMouseDown);
+        container.addEventListener('mousemove', onMouseMove);
+        container.addEventListener('mouseup', onMouseUp);
+        container.addEventListener('mouseleave', onMouseUp);
+        
+        container.addEventListener('touchstart', onTouchStart, { passive: false });
+        container.addEventListener('touchmove', onTouchMove, { passive: false });
+        container.addEventListener('touchend', onTouchEnd);
+        container.addEventListener('touchcancel', onTouchEnd);
+    });
 
-    // Master fader
-    // Master fader - COM SUPORTE TOUCH
-// Master fader - TOUCH ISOLADO
-const masterWrapper = document.querySelector('.master-fader-wrapper');
-if (masterWrapper) {
-    let isDragging = false;
-    let startY = 0;
-    let startValue = 0;
-    
-    const onMouseDown = (e) => {
-        e.stopPropagation();
-        isDragging = true;
-        startY = e.clientY;
-        startValue = state.masterVolume;
-        masterWrapper.classList.add('dragging');
-        e.preventDefault();
-    };
-    
-    const onMouseMove = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        const deltaY = startY - e.clientY;
-        const sensitivity = 0.6;
-        const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
-        handleMasterVolumeChange(newValue);
-        e.preventDefault();
-    };
-    
-    const onMouseUp = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        isDragging = false;
-        masterWrapper.classList.remove('dragging');
-    };
-    
-    const onTouchStart = (e) => {
-        e.stopPropagation();
-        isDragging = true;
-        const touch = e.touches[0];
-        startY = touch.clientY;
-        startValue = state.masterVolume;
-        masterWrapper.classList.add('dragging');
-        e.preventDefault();
-    };
-    
-    const onTouchMove = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        const touch = e.touches[0];
-        const deltaY = startY - touch.clientY;
-        const sensitivity = 0.6;
-        const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
-        handleMasterVolumeChange(newValue);
-        e.preventDefault();
-    };
-    
-    const onTouchEnd = (e) => {
-        if (!isDragging) return;
-        e.stopPropagation();
-        isDragging = false;
-        masterWrapper.classList.remove('dragging');
-    };
-    
-    // Eventos LOCAIS
-    masterWrapper.addEventListener('mousedown', onMouseDown);
-    masterWrapper.addEventListener('mousemove', onMouseMove);
-    masterWrapper.addEventListener('mouseup', onMouseUp);
-    masterWrapper.addEventListener('mouseleave', onMouseUp);
-    
-    masterWrapper.addEventListener('touchstart', onTouchStart, { passive: false });
-    masterWrapper.addEventListener('touchmove', onTouchMove, { passive: false });
-    masterWrapper.addEventListener('touchend', onTouchEnd);
-    masterWrapper.addEventListener('touchcancel', onTouchEnd);
-}
+    // ========================================
+    // MASTER FADER - TOUCH ISOLADO
+    // ========================================
+    const masterWrapper = document.querySelector('.master-fader-wrapper');
+    if (masterWrapper) {
+        let isDragging = false;
+        let startY = 0;
+        let startValue = 0;
+        
+        const onMouseDown = (e) => {
+            e.stopPropagation();
+            isDragging = true;
+            startY = e.clientY;
+            startValue = state.masterVolume;
+            masterWrapper.classList.add('dragging');
+            e.preventDefault();
+        };
+        
+        const onMouseMove = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            const deltaY = startY - e.clientY;
+            const sensitivity = 0.6;
+            const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
+            handleMasterVolumeChange(newValue);
+            e.preventDefault();
+        };
+        
+        const onMouseUp = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            isDragging = false;
+            masterWrapper.classList.remove('dragging');
+        };
+        
+        const onTouchStart = (e) => {
+            e.stopPropagation();
+            isDragging = true;
+            const touch = e.touches[0];
+            startY = touch.clientY;
+            startValue = state.masterVolume;
+            masterWrapper.classList.add('dragging');
+            e.preventDefault();
+        };
+        
+        const onTouchMove = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            const touch = e.touches[0];
+            const deltaY = startY - touch.clientY;
+            const sensitivity = 0.6;
+            const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
+            handleMasterVolumeChange(newValue);
+            e.preventDefault();
+        };
+        
+        const onTouchEnd = (e) => {
+            if (!isDragging) return;
+            e.stopPropagation();
+            isDragging = false;
+            masterWrapper.classList.remove('dragging');
+        };
+        
+        masterWrapper.addEventListener('mousedown', onMouseDown);
+        masterWrapper.addEventListener('mousemove', onMouseMove);
+        masterWrapper.addEventListener('mouseup', onMouseUp);
+        masterWrapper.addEventListener('mouseleave', onMouseUp);
+        
+        masterWrapper.addEventListener('touchstart', onTouchStart, { passive: false });
+        masterWrapper.addEventListener('touchmove', onTouchMove, { passive: false });
+        masterWrapper.addEventListener('touchend', onTouchEnd);
+        masterWrapper.addEventListener('touchcancel', onTouchEnd);
+    }
 
-    // Track buttons
+    // ========================================
+    // TRACK BUTTONS (SOLO/MUTE)
+    // ========================================
     document.querySelectorAll('.track-button').forEach(button => {
         button.addEventListener('click', (e) => {
             const action = e.target.dataset.action;
@@ -2476,7 +4141,9 @@ if (masterWrapper) {
         });
     });
 
-    // Markers
+    // ========================================
+    // MARKERS
+    // ========================================
     document.querySelectorAll('.marker').forEach(marker => {
         marker.addEventListener('click', (e) => {
             if (!e.target.closest('.marker-delete')) {
@@ -2496,10 +4163,12 @@ if (masterWrapper) {
         });
     });
 
-    // Projects
+    // ========================================
+    // PROJECTS (BIBLIOTECA)
+    // ========================================
     document.querySelectorAll('.project-card').forEach(card => {
         card.addEventListener('click', (e) => {
-            if (!e.target.closest('.delete-btn')) {
+            if (!e.target.closest('.delete-btn') && !e.target.closest('.export-project-btn')) {
                 const projectId = parseInt(card.dataset.projectId);
                 const project = state.savedProjects.find(p => p.id === projectId);
                 if (project) {
@@ -2509,10 +4178,124 @@ if (masterWrapper) {
         });
     });
 
+    document.querySelectorAll('.export-project-btn').forEach(button => {
+        button.addEventListener('click', (e) => {
+            const projectId = parseInt(button.dataset.projectId);
+            exportProjectFromLibrary(projectId, e);
+        });
+    });
+
     document.querySelectorAll('.delete-btn').forEach(button => {
         button.addEventListener('click', (e) => {
             const projectId = parseInt(button.dataset.projectId);
             deleteProject(projectId, e);
         });
     });
+
+    // ========================================
+    // STORAGE MODE SELECT - VERSÃO ATUALIZADA
+    // ========================================
+    const storageModeSelect = document.getElementById('storage-mode-select');
+    if (storageModeSelect) {
+        storageModeSelect.addEventListener('change', async (e) => {
+            const newMode = e.target.value;
+            
+            // ========== MODO PASTA LOCAL ==========
+            if (newMode === 'folder' && supportsFileSystem) {
+                const success = await setupLibraryFolder();
+                if (success) {
+                    state.storageMode = 'folder';
+                    showAlert('✅ Mudado para Modo Pasta Local!\n\nAgora seus projetos serão salvos diretamente na pasta selecionada.');
+                    render();
+                } else {
+                    // Reverte seleção se cancelou
+                    e.target.value = state.storageMode;
+                }
+            } 
+            
+            // ========== MODO GOOGLE DRIVE ==========
+            else if (newMode === 'drive') {
+                if (state.googleDriveConnected) {
+                    // Já está conectado, apenas confirma mudança
+                    const confirmed = await showConfirm(
+                        '✅ Google Drive já está conectado!\n\n' +
+                        `📧 ${state.googleDriveEmail}\n\n` +
+                        'Deseja mudar para este modo de armazenamento?'
+                    );
+                    
+                    if (confirmed) {
+                        state.storageMode = 'drive';
+                        
+                        // Atualiza config
+                        const config = loadLibraryConfig();
+                        config.storageMode = 'drive';
+                        saveLibraryConfig(config);
+                        
+                        showAlert('✅ Modo Google Drive ativado!\n\nSeus projetos serão salvos na nuvem.');
+                        render();
+                    } else {
+                        // Reverte seleção
+                        e.target.value = state.storageMode;
+                    }
+                } else {
+                    // Não está conectado - inicia conexão AUTOMATICAMENTE
+                    console.log('🔐 Iniciando conexão com Google Drive...');
+                    
+                    await connectGoogleDrive();
+                    
+                    // Verifica se conseguiu conectar
+                    if (state.googleDriveConnected) {
+                        state.storageMode = 'drive';
+                        
+                        // Atualiza config
+                        const config = loadLibraryConfig();
+                        config.storageMode = 'drive';
+                        saveLibraryConfig(config);
+                        
+                        console.log('✅ Google Drive conectado e modo ativado!');
+                        render();
+                    } else {
+                        // Falhou ou cancelou - reverte seleção
+                        console.log('⚠️ Conexão cancelada ou falhou');
+                        e.target.value = state.storageMode;
+                        render();
+                    }
+                }
+            } 
+            
+            // ========== MODO PORTÁTIL ==========
+            else if (newMode === 'local') {
+                const confirmed = await showConfirm(
+                    '⚠️ Mudar para Modo Portátil?\n\n' +
+                    'Você precisará baixar/carregar arquivos .mtp manualmente.\n\n' +
+                    'Os projetos da pasta local não serão apagados.'
+                );
+                
+                if (confirmed) {
+                    state.storageMode = 'local';
+                    
+                    // Limpa referência à pasta
+                    libraryFolderHandle = null;
+                    state.libraryPath = null;
+                    
+                    // Atualiza config
+                    const config = loadLibraryConfig();
+                    config.libraryPath = null;
+                    config.storageMode = 'local';
+                    saveLibraryConfig(config);
+                    
+                    // Remove projetos da biblioteca (mas não os importados)
+                    state.savedProjects = state.savedProjects.filter(p => 
+                        p.source !== 'library'
+                    );
+                    
+                    showAlert('✅ Mudado para Modo Portátil!\n\nUse "Salvar" para baixar projetos como .mtp');
+                    render();
+                } else {
+                    // Reverte seleção
+                    e.target.value = state.storageMode;
+                }
+            }
+        });
+    }
 }
