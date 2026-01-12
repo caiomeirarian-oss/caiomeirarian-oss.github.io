@@ -49,7 +49,7 @@
     <input type="file" id="projectImportInput" accept=".mtp,.json" class="hidden">
     <input type="file" id="libraryFolderInput" webkitdirectory directory class="hidden">
     <input type="file" id="folderInputLibrary" accept="audio/*" webkitdirectory directory multiple class="hidden">
-    
+    <input type="file" id="multipleProjectImportInput" accept=".mtp,.json" multiple class="hidden">
     <script src="script.js"></script>
     
     <!-- PWA Registration -->
@@ -76,5 +76,9 @@
             console.log('💡 App pode ser instalado!');
         });
     </script>
+    
+    <!-- 🔧 ERUDA - Console Mobile (ADICIONE AQUI) -->
+    <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+    <script>eruda.init();</script>
 </body>
 </html>
