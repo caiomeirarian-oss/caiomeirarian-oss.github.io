@@ -1,6 +1,5 @@
 // ========================================
-// MULTITRACK PRO - PARTE 1/5
-// Inicialização, Audio Context e State
+// MULTITRACK PRO
 // ========================================
 
 // Audio Context
@@ -5380,3 +5379,4 @@ function getProjectStatusBadge() {
     
     return badges.join('');
 }
+
