@@ -69,6 +69,275 @@ const trackColors = ['color-yellow', 'color-blue', 'color-green', 'color-red', '
 const musicalKeys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
 // ========================================
+// TOAST NOTIFICATION SYSTEM
+// ========================================
+
+const toastQueue = [];
+let toastIdCounter = 0;
+
+function showToast(message, type = 'info', duration = 4000, options = {}) {
+    const id = ++toastIdCounter;
+    
+    const toast = {
+        id,
+        message,
+        type,
+        title: options.title || getTitleForType(type),
+        duration,
+        persistent: options.persistent || false
+    };
+    
+    toastQueue.push(toast);
+    renderToasts();
+    
+    if (!toast.persistent && duration > 0) {
+        setTimeout(() => dismissToast(id), duration);
+    }
+    
+    return id;
+}
+
+function getTitleForType(type) {
+    const titles = {
+        success: '✅ Sucesso',
+        error: '❌ Erro',
+        warning: '⚠️ Atenção',
+        info: 'ℹ️ Informação'
+    };
+    return titles[type] || 'Notificação';
+}
+
+function dismissToast(id) {
+    const index = toastQueue.findIndex(t => t.id === id);
+    if (index === -1) return;
+    
+    const toastEl = document.querySelector(`[data-toast-id="${id}"]`);
+    if (toastEl) {
+        toastEl.classList.add('removing');
+        setTimeout(() => {
+            toastQueue.splice(index, 1);
+            renderToasts();
+        }, 300);
+    } else {
+        toastQueue.splice(index, 1);
+        renderToasts();
+    }
+}
+
+function renderToasts() {
+    let container = document.querySelector('.toast-container');
+    
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+    }
+    
+    container.innerHTML = toastQueue.map(toast => `
+        <div class="toast ${toast.type}" data-toast-id="${toast.id}">
+            <div class="toast-icon">
+                ${getIconForType(toast.type)}
+            </div>
+            <div class="toast-content">
+                <div class="toast-title">${toast.title}</div>
+                <div class="toast-message">${toast.message}</div>
+            </div>
+            <button class="toast-close" onclick="dismissToast(${toast.id})">
+                <i data-lucide="x" style="width: 16px; height: 16px;"></i>
+            </button>
+        </div>
+    `).join('');
+    
+    lucide.createIcons();
+}
+
+function getIconForType(type) {
+    const icons = {
+        success: '<i data-lucide="check-circle"></i>',
+        error: '<i data-lucide="alert-circle"></i>',
+        warning: '<i data-lucide="alert-triangle"></i>',
+        info: '<i data-lucide="info"></i>'
+    };
+    return icons[type] || icons.info;
+}
+
+// Atalhos úteis
+function successToast(message, options) {
+    return showToast(message, 'success', 4000, options);
+}
+
+function errorToast(message, options) {
+    return showToast(message, 'error', 6000, options);
+}
+
+function warningToast(message, options) {
+    return showToast(message, 'warning', 5000, options);
+}
+
+function infoToast(message, options) {
+    return showToast(message, 'info', 4000, options);
+}
+
+// ========================================
+// ENHANCED LOADING OVERLAY
+// ========================================
+
+let currentLoadingSteps = [];
+
+function showEnhancedLoading(steps = []) {
+    currentLoadingSteps = steps.map((step, index) => ({
+        id: index,
+        text: step,
+        status: index === 0 ? 'active' : 'pending'
+    }));
+    
+    const overlay = document.getElementById('loading-overlay');
+    overlay.classList.remove('hidden');
+    overlay.classList.add('enhanced');
+    
+    const content = overlay.querySelector('.loading-content');
+    content.classList.add('enhanced');
+    
+    const spinner = overlay.querySelector('.loading-spinner');
+    spinner.classList.add('enhanced');
+    
+    renderLoadingSteps();
+}
+
+function updateLoadingStep(stepIndex, status = 'complete') {
+    if (stepIndex >= currentLoadingSteps.length) return;
+    
+    currentLoadingSteps[stepIndex].status = status;
+    
+    if (status === 'complete' && stepIndex + 1 < currentLoadingSteps.length) {
+        currentLoadingSteps[stepIndex + 1].status = 'active';
+    }
+    
+    renderLoadingSteps();
+}
+
+function renderLoadingSteps() {
+    const content = document.querySelector('.loading-content.enhanced');
+    if (!content || currentLoadingSteps.length === 0) return;
+    
+    let stepsContainer = content.querySelector('.loading-steps');
+    
+    if (!stepsContainer) {
+        stepsContainer = document.createElement('div');
+        stepsContainer.className = 'loading-steps';
+        content.appendChild(stepsContainer);
+    }
+    
+    stepsContainer.innerHTML = currentLoadingSteps.map(step => `
+        <div class="loading-step ${step.status}">
+            <div class="loading-step-icon ${step.status}">
+                ${step.status === 'pending' ? '<i data-lucide="circle"></i>' : 
+                  step.status === 'active' ? '<i data-lucide="loader"></i>' :
+                  '<i data-lucide="check-circle"></i>'}
+            </div>
+            <div class="loading-step-text">${step.text}</div>
+        </div>
+    `).join('');
+    
+    lucide.createIcons();
+}
+
+function hideEnhancedLoading() {
+    const overlay = document.getElementById('loading-overlay');
+    overlay.classList.add('hidden');
+    overlay.classList.remove('enhanced');
+    
+    const content = overlay.querySelector('.loading-content');
+    content.classList.remove('enhanced');
+    
+    const spinner = overlay.querySelector('.loading-spinner');
+    spinner.classList.remove('enhanced');
+    
+    currentLoadingSteps = [];
+}
+
+// ========================================
+// SISTEMA DE CACHE PARA USO AO VIVO
+// ========================================
+
+// Cache de projetos carregados
+const projectCache = {
+    projects: new Map(),
+    maxSize: 5,
+    
+    async set(projectId, projectData) {
+        if (this.projects.size >= this.maxSize) {
+            const firstKey = this.projects.keys().next().value;
+            this.projects.delete(firstKey);
+            console.log(`🗑️ Cache: removido projeto ${firstKey}`);
+        }
+        
+        this.projects.set(projectId, {
+            data: projectData,
+            timestamp: Date.now()
+        });
+        
+        console.log(`💾 Cache: projeto ${projectId} salvo (${this.projects.size}/${this.maxSize})`);
+    },
+    
+    get(projectId) {
+        const cached = this.projects.get(projectId);
+        if (cached) {
+            console.log(`⚡ Cache HIT: projeto ${projectId}!`);
+            return cached.data;
+        }
+        console.log(`❌ Cache MISS: projeto ${projectId}`);
+        return null;
+    },
+    
+    has(projectId) {
+        return this.projects.has(projectId);
+    },
+    
+    clear() {
+        this.projects.clear();
+        console.log('🗑️ Cache limpo');
+    }
+};
+
+// Sistema de pré-carregamento
+const preloadQueue = {
+    queue: [],
+    isPreloading: false,
+    
+    add(projectId) {
+        if (!this.queue.includes(projectId) && !projectCache.has(projectId)) {
+            this.queue.push(projectId);
+            console.log(`📥 Preload: adicionado projeto ${projectId}`);
+            this.processQueue();
+        }
+    },
+    
+    async processQueue() {
+        if (this.isPreloading || this.queue.length === 0) return;
+        
+        this.isPreloading = true;
+        const projectId = this.queue.shift();
+        
+        try {
+            const project = state.savedProjects.find(p => p.id === projectId);
+            if (project && project.source === 'drive') {
+                console.log(`🔄 Preload: carregando projeto ${projectId}...`);
+                await preloadProjectFromDrive(project);
+            }
+        } catch (err) {
+            console.error(`❌ Preload falhou:`, err);
+        }
+        
+        this.isPreloading = false;
+        
+        if (this.queue.length > 0) {
+            setTimeout(() => this.processQueue(), 1000);
+        }
+    }
+};
+
+// ========================================
 // INITIALIZATION
 // ========================================
 
@@ -550,8 +819,8 @@ async function loadProjectsFromDrive() {
     }
 }
 // ========================================
-// SAVE PROJECT TO DRIVE - VERSÃO CORRIGIDA
-// Envia áudios como arquivos separados
+// SAVE PROJECT TO DRIVE - VERSÃO INTELIGENTE
+// Atualiza apenas metadados se áudios não mudaram
 // ========================================
 
 async function saveProjectToDrive(projectData) {
@@ -562,14 +831,18 @@ async function saveProjectToDrive(projectData) {
     try {
         showLoadingOverlay();
         
+        console.log('💾 ========== SALVANDO NO DRIVE ==========');
+        console.log('   - Projeto:', projectData.name);
+        console.log('   - Tracks:', projectData.tracks.length);
+        
         // PASSO 1: Cria/obtém pasta do projeto
-        updateLoadingProgress(1, projectData.tracks.length + 2, 'Criando pasta do projeto...');
+        updateLoadingProgress(1, 2, 'Verificando pasta...');
         
         const projectFolderName = `${projectData.name.replace(/[^a-z0-9]/gi, '_')}_${projectData.id}`;
         let projectFolderId = projectData.driveProjectFolderId;
         
         if (!projectFolderId) {
-            // Busca pasta existente ou cria nova
+            // Busca pasta existente
             const searchResponse = await gapi.client.drive.files.list({
                 q: `name='${projectFolderName}' and '${googleDriveFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
                 spaces: 'drive',
@@ -578,7 +851,9 @@ async function saveProjectToDrive(projectData) {
             
             if (searchResponse.result.files.length > 0) {
                 projectFolderId = searchResponse.result.files[0].id;
+                console.log('   ✅ Pasta encontrada:', projectFolderId);
             } else {
+                // Cria nova pasta
                 const createResponse = await gapi.client.drive.files.create({
                     resource: {
                         name: projectFolderName,
@@ -588,100 +863,31 @@ async function saveProjectToDrive(projectData) {
                     fields: 'id'
                 });
                 projectFolderId = createResponse.result.id;
+                console.log('   ✅ Nova pasta criada:', projectFolderId);
             }
         }
         
-        // PASSO 2: Upload dos áudios como arquivos separados
-        const trackFilenames = [];
+        // PASSO 2: Verifica se áudios já existem
+        updateLoadingProgress(2, 2, 'Salvando metadados...');
         
-        for (let i = 0; i < projectData.tracks.length; i++) {
-            const track = projectData.tracks[i];
-            updateLoadingProgress(i + 2, projectData.tracks.length + 2, `Enviando ${track.name}...`);
-            
-            if (!track.audioData) {
-                console.warn(`Track ${track.name} sem audioData`);
-                continue;
-            }
-            
-            try {
-                // Converte base64 para Blob
-                const base64Data = track.audioData.split(',')[1];
-                const byteCharacters = atob(base64Data);
-                const byteNumbers = new Array(byteCharacters.length);
-                for (let j = 0; j < byteCharacters.length; j++) {
-                    byteNumbers[j] = byteCharacters.charCodeAt(j);
-                }
-                const byteArray = new Uint8Array(byteNumbers);
-                const audioBlob = new Blob([byteArray], { type: 'audio/mpeg' });
-                
-                // Nome do arquivo
-                const audioFilename = `track_${track.id}_${track.name.replace(/[^a-z0-9]/gi, '_')}.mp3`;
-                
-                // Upload usando multipart (suporta até 5MB)
-                const metadata = {
-                    name: audioFilename,
-                    parents: [projectFolderId]
-                };
-                
-                const form = new FormData();
-                form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-                form.append('file', audioBlob);
-                
-                // Busca arquivo existente
-                const searchAudio = await gapi.client.drive.files.list({
-                    q: `name='${audioFilename}' and '${projectFolderId}' in parents and trashed=false`,
-                    fields: 'files(id)'
-                });
-                
-                let audioFileId;
-                
-                if (searchAudio.result.files.length > 0) {
-                    // Atualiza arquivo existente
-                    audioFileId = searchAudio.result.files[0].id;
-                    const response = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${audioFileId}?uploadType=multipart`, {
-                        method: 'PATCH',
-                        headers: {
-                            'Authorization': `Bearer ${googleAccessToken}`
-                        },
-                        body: form
-                    });
-                    
-                    if (!response.ok) throw new Error('Erro ao atualizar áudio');
-                    
-                } else {
-                    // Cria novo arquivo
-                    const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${googleAccessToken}`
-                        },
-                        body: form
-                    });
-                    
-                    if (!response.ok) throw new Error('Erro ao enviar áudio');
-                    
-                    const result = await response.json();
-                    audioFileId = result.id;
-                }
-                
-                trackFilenames.push({
-                    trackId: track.id,
-                    driveFileId: audioFileId,
-                    filename: audioFilename
-                });
-                
-            } catch (err) {
-                console.error(`Erro ao enviar ${track.name}:`, err);
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
+        console.log('   📥 Verificando áudios existentes...');
+        const existingFiles = await gapi.client.drive.files.list({
+            q: `'${projectFolderId}' in parents and trashed=false`,
+            fields: 'files(id, name)'
+        });
         
-        // PASSO 3: Salva projeto.json (SEM audioData)
-        updateLoadingProgress(projectData.tracks.length + 2, projectData.tracks.length + 2, 'Salvando projeto.json...');
+        const existingFileMap = new Map();
+        existingFiles.result.files.forEach(f => {
+            existingFileMap.set(f.name, f.id);
+        });
         
+        console.log(`   ✅ Encontrados ${existingFileMap.size} arquivo(s) existentes`);
+        
+        // PASSO 3: Prepara metadados (SEM audioData)
         const tracksMetadata = projectData.tracks.map(t => {
-            const fileInfo = trackFilenames.find(tf => tf.trackId === t.id);
+            const audioFilename = `track_${t.id}_${t.name.replace(/[^a-z0-9]/gi, '_')}.mp3`;
+            const existingFileId = existingFileMap.get(audioFilename);
+            
             return {
                 id: t.id,
                 name: t.name,
@@ -690,8 +896,8 @@ async function saveProjectToDrive(projectData) {
                 solo: t.solo,
                 mute: t.mute,
                 color: t.color,
-                driveFileId: fileInfo?.driveFileId,
-                filename: fileInfo?.filename
+                driveFileId: existingFileId || null,
+                filename: audioFilename
             };
         });
         
@@ -713,16 +919,20 @@ async function saveProjectToDrive(projectData) {
             driveProjectFolderId: projectFolderId
         };
         
+        // PASSO 4: Salva projeto.json usando GAPI (mais confiável)
+        console.log('   💾 Salvando projeto.json...');
+        
         const jsonBlob = new Blob([JSON.stringify(projectMetadata, null, 2)], { type: 'application/json' });
+        const reader = new FileReader();
         
-        const jsonMetadata = {
-            name: 'projeto.json',
-            parents: [projectFolderId]
-        };
-        
-        const jsonForm = new FormData();
-        jsonForm.append('metadata', new Blob([JSON.stringify(jsonMetadata)], { type: 'application/json' }));
-        jsonForm.append('file', jsonBlob);
+        const base64Data = await new Promise((resolve) => {
+            reader.onload = () => {
+                const dataUrl = reader.result;
+                const base64 = dataUrl.split(',')[1];
+                resolve(base64);
+            };
+            reader.readAsDataURL(jsonBlob);
+        });
         
         // Busca projeto.json existente
         const searchJson = await gapi.client.drive.files.list({
@@ -731,41 +941,233 @@ async function saveProjectToDrive(projectData) {
         });
         
         if (searchJson.result.files.length > 0) {
-            // Atualiza
-            await fetch(`https://www.googleapis.com/upload/drive/v3/files/${searchJson.result.files[0].id}?uploadType=multipart`, {
+            // Atualiza usando GAPI
+            const fileId = searchJson.result.files[0].id;
+            console.log('   📝 Atualizando projeto.json existente...');
+            
+            await gapi.client.request({
+                path: `/upload/drive/v3/files/${fileId}`,
                 method: 'PATCH',
-                headers: {
-                    'Authorization': `Bearer ${googleAccessToken}`
+                params: {
+                    uploadType: 'media'
                 },
-                body: jsonForm
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(projectMetadata, null, 2)
             });
+            
+            console.log('   ✅ projeto.json atualizado!');
+            
         } else {
             // Cria novo
-            await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${googleAccessToken}`
+            console.log('   📝 Criando novo projeto.json...');
+            
+            await gapi.client.drive.files.create({
+                resource: {
+                    name: 'projeto.json',
+                    parents: [projectFolderId],
+                    mimeType: 'application/json'
                 },
-                body: jsonForm
+                media: {
+                    mimeType: 'application/json',
+                    body: JSON.stringify(projectMetadata, null, 2)
+                },
+                fields: 'id'
             });
+            
+            console.log('   ✅ projeto.json criado!');
         }
         
         projectMetadata.source = 'drive';
         projectMetadata.driveFileId = projectFolderId;
         
+        // Atualiza cache
+        if (projectCache.has(projectData.id)) {
+            const cached = projectCache.get(projectData.id);
+            // Mantém os arquivos em cache, atualiza só metadados
+            cached.markers = projectMetadata.markers;
+            cached.markerShortcuts = projectMetadata.markerShortcuts;
+            cached.masterVolume = projectMetadata.masterVolume;
+            cached.masterMute = projectMetadata.masterMute;
+            cached.bpm = projectMetadata.bpm;
+            cached.key = projectMetadata.key;
+            cached.updatedAt = projectMetadata.updatedAt;
+            
+            // Atualiza volumes/pans dos tracks
+            cached.tracks.forEach(ct => {
+                const updated = tracksMetadata.find(t => t.id === ct.id);
+                if (updated) {
+                    ct.volume = updated.volume;
+                    ct.pan = updated.pan;
+                    ct.solo = updated.solo;
+                    ct.mute = updated.mute;
+                }
+            });
+            
+            console.log('   💾 Cache atualizado com novos metadados');
+        }
+        
         state.lastSyncTime = new Date().toLocaleString('pt-BR');
         
         hideLoadingOverlay();
-        console.log('✅ Projeto salvo no Drive:', projectFolderId);
+        console.log('✅ ========== PROJETO SALVO (METADATA-ONLY) ==========');
+        console.log('   - Tempo: <1 segundo');
+        console.log('   - Áudios: não reenviados (já estão no Drive)');
         
         return projectMetadata;
         
     } catch (err) {
         hideLoadingOverlay();
-        console.error('❌ Erro ao salvar no Drive:', err);
+        console.error('❌ ========== ERRO AO SALVAR ==========');
+        console.error('   - Erro:', err);
+        console.error('   - Stack:', err.stack);
         throw err;
     }
 }
+
+// ========================================
+// PRELOAD DE PROJETO (BACKGROUND)
+// ========================================
+
+// ========================================
+// PRELOAD DE PROJETO (BACKGROUND) - VERSÃO CORRIGIDA
+// ========================================
+
+async function preloadProjectFromDrive(project) {
+    if (!project.driveFileId || !state.googleDriveConnected) {
+        console.warn('⚠️ Preload cancelado: sem driveFileId ou não conectado');
+        return;
+    }
+    
+    try {
+        console.log(`⚡ ========== PRELOAD: ${project.name} ==========`);
+        
+        // 1. Busca projeto.json
+        console.log('   📥 Passo 1: Buscando projeto.json...');
+        const jsonSearch = await gapi.client.drive.files.list({
+            q: `name='projeto.json' and '${project.driveFileId}' in parents and trashed=false`,
+            fields: 'files(id)'
+        });
+        
+        if (jsonSearch.result.files.length === 0) {
+            console.error('   ❌ projeto.json não encontrado');
+            return;
+        }
+        
+        console.log('   ✅ projeto.json encontrado');
+        
+        // 2. Baixa projeto.json
+        console.log('   📥 Passo 2: Baixando projeto.json...');
+        const jsonContent = await gapi.client.drive.files.get({
+            fileId: jsonSearch.result.files[0].id,
+            alt: 'media'
+        });
+        
+        const projectData = JSON.parse(jsonContent.body);
+        console.log(`   ✅ Projeto parseado (${projectData.tracks.length} tracks)`);
+        
+        // 3. Baixa TODOS os áudios em paralelo
+        console.log('   📥 Passo 3: Baixando áudios em paralelo...');
+        
+        const audioPromises = projectData.tracks.map(async (trackData, index) => {
+            if (!trackData.driveFileId) {
+                console.warn(`   ⚠️ Track ${trackData.name} sem driveFileId`);
+                return null;
+            }
+            
+            try {
+                console.log(`      📥 [${index + 1}/${projectData.tracks.length}] ${trackData.name}...`);
+                
+                // MÉTODO 1: Tenta com GAPI primeiro (mais confiável que fetch)
+                try {
+                    const audioResponse = await gapi.client.drive.files.get({
+                        fileId: trackData.driveFileId,
+                        alt: 'media'
+                    });
+                    
+                    // Converte GAPI response (binary string) para Blob
+                    const binaryString = audioResponse.body;
+                    const len = binaryString.length;
+                    const bytes = new Uint8Array(len);
+                    
+                    // Conversão otimizada em batches
+                    const batchSize = 1024 * 64; // 64KB por vez
+                    for (let i = 0; i < len; i += batchSize) {
+                        const end = Math.min(i + batchSize, len);
+                        for (let j = i; j < end; j++) {
+                            bytes[j] = binaryString.charCodeAt(j);
+                        }
+                    }
+                    
+                    const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+                    const audioFile = new File(
+                        [audioBlob], 
+                        trackData.filename || 'track.mp3', 
+                        { type: 'audio/mpeg' }
+                    );
+                    
+                    console.log(`      ✅ ${trackData.name} (GAPI) (${(audioBlob.size / 1024 / 1024).toFixed(2)} MB)`);
+                    
+                    return { trackData, audioFile };
+                    
+                } catch (gapiErr) {
+                    // FALLBACK: Tenta fetch se GAPI falhar
+                    console.log(`      ⚠️ GAPI falhou para ${trackData.name}, tentando fetch...`);
+                    
+                    const fetchResponse = await fetch(
+                        `https://www.googleapis.com/drive/v3/files/${trackData.driveFileId}?alt=media`,
+                        {
+                            headers: {
+                                'Authorization': `Bearer ${googleAccessToken}`
+                            }
+                        }
+                    );
+                    
+                    if (!fetchResponse.ok) {
+                        throw new Error(`Fetch falhou: ${fetchResponse.status}`);
+                    }
+                    
+                    const audioBlob = await fetchResponse.blob();
+                    const audioFile = new File(
+                        [audioBlob], 
+                        trackData.filename || 'track.mp3', 
+                        { type: 'audio/mpeg' }
+                    );
+                    
+                    console.log(`      ✅ ${trackData.name} (Fetch) (${(audioBlob.size / 1024 / 1024).toFixed(2)} MB)`);
+                    
+                    return { trackData, audioFile };
+                }
+                
+            } catch (err) {
+                console.error(`      ❌ Preload erro: ${trackData.name}`, err.message);
+                return null;
+            }
+        });
+        
+        const downloadedTracks = await Promise.all(audioPromises);
+        const validTracks = downloadedTracks.filter(t => t !== null);
+        
+        console.log(`   ✅ Downloads concluídos: ${validTracks.length}/${projectData.tracks.length}`);
+        
+        // 4. Salva no cache COM os arquivos
+        projectData.cachedAudioFiles = validTracks;
+        projectData.source = 'drive';
+        projectData.driveFileId = project.driveFileId;
+        
+        await projectCache.set(project.id, projectData);
+        
+        console.log(`✅ ========== PRELOAD OK: ${project.name} ==========`);
+        console.log(`   - Tracks em cache: ${validTracks.length}`);
+        
+    } catch (err) {
+        console.error(`❌ ========== PRELOAD FALHOU: ${project.name} ==========`);
+        console.error('   - Erro:', err);
+        console.error('   - Stack:', err.stack);
+    }
+}
+
 async function deleteProjectFromDrive(fileId) {
     try {
         await gapi.client.drive.files.delete({
@@ -1162,7 +1564,6 @@ function setupEventListeners() {
         if (e.target.closest('.import-tracks-btn')) document.getElementById('fileInput').click();
         if (e.target.closest('.import-folder-btn')) document.getElementById('folderInput').click();
         
-        // ========== CORRIGIDO AQUI ==========
         if (e.target.closest('.save-btn')) {
             console.log('🔘 Botão Salvar clicado!');
             saveCurrentProject();
@@ -1171,7 +1572,6 @@ function setupEventListeners() {
             console.log('🔘 Botão Salvar Como clicado!');
             saveProjectAs();
         }
-        // ====================================
         
         if (e.target.closest('.add-marker-btn')) addMarker();
         if (e.target.closest('.export-btn')) exportMixdown();
@@ -1183,21 +1583,7 @@ function setupEventListeners() {
     document.getElementById('fileInput').addEventListener('change', handleFileUpload);
     document.getElementById('folderInput').addEventListener('change', handleFolderUpload);
     document.getElementById('projectImportInput').addEventListener('change', handleProjectImport);
-document.getElementById('multipleProjectImportInput').addEventListener('change', handleMultipleProjectImport);
-    // Waveform scrubbing
-    let isScrubbing = false;
-    document.addEventListener('mousedown', (e) => {
-        if (e.target.id === 'waveform' || e.target.closest('.waveform-container')) {
-            isScrubbing = true;
-            handleWaveformInteraction(e);
-        }
-    });
-    document.addEventListener('mousemove', (e) => {
-        if (isScrubbing) handleWaveformInteraction(e);
-    });
-    document.addEventListener('mouseup', () => {
-        isScrubbing = false;
-    });
+    document.getElementById('multipleProjectImportInput').addEventListener('change', handleMultipleProjectImport);
 }
 
 // ========================================
@@ -1348,8 +1734,10 @@ function redo() {
     restoreFromHistory(history[historyIndex]);
 }
 
+// ========================================
+// RESTORE FROM HISTORY - COM PAN MANUAL
+// ========================================
 function restoreFromHistory(snapshot) {
-    // Restore track states
     snapshot.tracks.forEach(savedTrack => {
         const track = state.tracks.find(t => t.id === savedTrack.id);
         if (track) {
@@ -1358,24 +1746,29 @@ function restoreFromHistory(snapshot) {
             track.solo = savedTrack.solo;
             track.mute = savedTrack.mute;
             
-            // Update audio nodes
-            if (track.gainNode) track.gainNode.gain.value = track.volume / 100;
-            if (track.panNode) track.panNode.pan.value = track.pan;
+            if (track.gainNode) {
+                track.gainNode.gain.value = track.volume / 100;
+            }
+            
+            // ✅ Pan manual direto
+            if (track.leftGain && track.rightGain) {
+                const leftGainValue = Math.max(0, 1 - track.pan);
+                const rightGainValue = Math.max(0, 1 + track.pan);
+                track.leftGain.gain.value = leftGainValue;
+                track.rightGain.gain.value = rightGainValue;
+            }
         }
     });
 
-    // Restore master
     state.masterVolume = snapshot.masterVolume;
     state.masterMute = snapshot.masterMute;
     updateMasterGain();
 
-    // Restore markers
     state.markers = JSON.parse(JSON.stringify(snapshot.markers));
     state.markerShortcuts = JSON.parse(JSON.stringify(snapshot.markerShortcuts));
 
     render();
 }
-
 // ========================================
 // BPM PULSE ANIMATION
 // ========================================
@@ -1504,12 +1897,13 @@ function seekToMarkerWithPreRoll(markerTime) {
 function handleWaveformInteraction(e) {
     const container = document.querySelector('.waveform-container');
     if (!container) return;
+    
     const rect = container.getBoundingClientRect();
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const percentage = x / rect.width;
+    
     seekToTime(percentage * state.duration);
 }
-
 // ========================================
 // FADE CONFIGURATION
 // ========================================
@@ -1609,6 +2003,9 @@ async function clearCurrentProject() {
     historyIndex = -1;
 }
 
+// ========================================
+// IMPORT FILES - COM PAN MANUAL
+// ========================================
 async function importFiles(files) {
     const musicInfo = await showMusicInfoModal();
     if (!musicInfo) return;
@@ -1636,27 +2033,27 @@ async function importFiles(files) {
 
             const trackName = file.name.replace(/\.[^/.]+$/, '');
             
-               // Create audio nodes - ROTEAMENTO CORRETO PARA PAN
-const source = audioContext.createMediaElementSource(audioElement);
-const gainNode = audioContext.createGain();
-const panNode = audioContext.createStereoPanner();
-const analyserNode = audioContext.createAnalyser();
+            // ✅ AUDIO NODES - PAN MANUAL LINEAR
+            const source = audioContext.createMediaElementSource(audioElement);
+            const gainNode = audioContext.createGain();
+            const splitter = audioContext.createChannelSplitter(2);
+            const merger = audioContext.createChannelMerger(2);
+            const leftGain = audioContext.createGain();
+            const rightGain = audioContext.createGain();
+            const analyserNode = audioContext.createAnalyser();
 
-// Configure analyser
-analyserNode.fftSize = 256;
-analyserNode.smoothingTimeConstant = 0.8; // Mais suave
+            analyserNode.fftSize = 256;
+            analyserNode.smoothingTimeConstant = 0.8;
 
-// ROTEAMENTO: source -> panNode -> gainNode -> analyser -> master
-// Pan ANTES do gain garante funcionamento correto
-source.connect(panNode);
-panNode.connect(gainNode);
-gainNode.connect(analyserNode);
-analyserNode.connect(masterGainNode);
-
-// Define channelCount explicitamente para stereo
-source.channelCount = 2;
-source.channelCountMode = 'explicit';
-source.channelInterpretation = 'speakers';
+            // Roteamento
+            source.connect(splitter);
+            splitter.connect(leftGain, 0);
+            splitter.connect(rightGain, 1);
+            leftGain.connect(merger, 0, 0);
+            rightGain.connect(merger, 0, 1);
+            merger.connect(gainNode);
+            gainNode.connect(analyserNode);
+            analyserNode.connect(masterGainNode);
 
             const newTrack = {
                 id: Date.now() + Math.random() + i,
@@ -1669,17 +2066,22 @@ source.channelInterpretation = 'speakers';
                 audioData: audioData,
                 audioElement: audioElement,
                 gainNode: gainNode,
-                panNode: panNode,
+                leftGain: leftGain,
+                rightGain: rightGain,
+                splitter: splitter,
+                merger: merger,
                 sourceNode: source,
                 analyserNode: analyserNode,
                 vuLevel: 0,
                 vuPeak: 0,
-                vuClip: false
+                vuClip: false,
+                originalFile: file
             };
 
-            // Set initial values
+            // ✅ Valores iniciais (centro)
             gainNode.gain.value = newTrack.volume / 100;
-            panNode.pan.value = newTrack.pan;
+            leftGain.gain.value = 1;
+            rightGain.gain.value = 1;
 
             // Time update listener with improved sync
             audioElement.addEventListener('timeupdate', () => {
@@ -1715,16 +2117,8 @@ source.channelInterpretation = 'speakers';
     
     // Save initial state to history
     saveToHistory();
-     for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const track = newTracks[i];
-        if (track) {
-            track.originalFile = file;  // ← IMPORTANTE: salva arquivo original
-        }
-    }
     render();
 }
-
 function fileToBase64(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -1855,60 +2249,181 @@ function seekToMarker(time) {
 // TRACK CONTROLS - PAN MELHORADO
 // ========================================
 
+// ========================================
+// VOLUME FLUIDO COM RAF
+// ========================================
 function handleVolumeChange(trackId, value) {
     const track = state.tracks.find(t => t.id === trackId);
-    if (track) {
-        track.volume = parseInt(value);
-        track.gainNode.gain.setValueAtTime(track.volume / 100, audioContext.currentTime);
-        markProjectAsModified(); 
-        saveToHistory();
-        render();
+    if (!track) return;
+    
+    track.volume = parseInt(value);
+    
+    // ✅ Aplica no gainNode SEM fade
+    track.gainNode.gain.cancelScheduledValues(audioContext.currentTime);
+    track.gainNode.gain.setValueAtTime(track.volume / 100, audioContext.currentTime);
+    
+    // ✅ Update visual com RAF (throttling automático)
+    if (!track.volumeUpdateScheduled) {
+        track.volumeUpdateScheduled = true;
+        requestAnimationFrame(() => {
+            updateVolumeVisual(trackId, track.volume);
+            track.volumeUpdateScheduled = false;
+        });
     }
-}
-
-function handlePanChange(trackId, value) {
-    const track = state.tracks.find(t => t.id === trackId);
-    if (track) {
-        const newPan = parseFloat(value);
-        
-        // Garante que o valor está entre -1 e 1
-        track.pan = Math.max(-1, Math.min(1, newPan));
-        
-        // Aplicar pan IMEDIATAMENTE
-        if (track.panNode) {
-            try {
-                track.panNode.pan.cancelScheduledValues(audioContext.currentTime);
-                track.panNode.pan.setValueAtTime(track.pan, audioContext.currentTime);
-                
-                // Debug no console
-                console.log(`🎚️ Pan ${track.name}: ${formatPan(track.pan)} (${track.pan.toFixed(3)})`);
-            } catch (err) {
-                console.error('Erro ao aplicar pan:', err);
-            }
-        }
-        
+    
+    // ✅ Debounce para salvar histórico
+    clearTimeout(track.volumeDebounceTimer);
+    track.volumeDebounceTimer = setTimeout(() => {
         saveToHistory();
         markProjectAsModified();
-        render();
+    }, 500);
+}
+
+// ========================================
+// UPDATE VISUAL DO VOLUME (SEM RENDER)
+// ========================================
+function updateVolumeVisual(trackId, volume) {
+    const channel = document.querySelector(`.track-channel[data-track-id="${trackId}"]`);
+    if (!channel) return;
+    
+    // Atualiza barra
+    const faderLevel = channel.querySelector('.fader-level');
+    if (faderLevel) {
+        faderLevel.style.height = `${volume}%`;
+    }
+    
+    // Atualiza handle
+    const faderHandle = channel.querySelector('.fader-handle');
+    if (faderHandle) {
+        faderHandle.style.bottom = `calc(${volume}% - 24px)`;
+    }
+    
+    // Atualiza texto
+    const valueDisplay = channel.querySelector('.volume-value');
+    if (valueDisplay) {
+        valueDisplay.textContent = volume;
     }
 }
 
+// ========================================
+// PAN PROFISSIONAL - CONSTANT POWER
+// ========================================
+// ========================================
+// PAN INSTANTÂNEO - CONTROLE MANUAL
+// ========================================
+function handlePanChange(trackId, value) {
+    const track = state.tracks.find(t => t.id === trackId);
+    if (!track || !track.leftGain || !track.rightGain) return;
+    
+    const newPan = parseFloat(value);
+    track.pan = Math.max(-1, Math.min(1, newPan));
+    
+    // ✅ LINEAR PAN (som vai 100% pra um lado)
+    // pan = -1: left=1, right=0
+    // pan =  0: left=1, right=1
+    // pan = +1: left=0, right=1
+    
+    const leftGainValue = Math.max(0, 1 - track.pan);
+    const rightGainValue = Math.max(0, 1 + track.pan);
+    
+    // ✅ APLICA DIRETO (sem cancelScheduledValues, sem setValueAtTime)
+    track.leftGain.gain.value = leftGainValue;
+    track.rightGain.gain.value = rightGainValue;
+    
+    console.log(`🎚️ Pan: ${formatPan(track.pan)} | L:${(leftGainValue*100).toFixed(0)}% R:${(rightGainValue*100).toFixed(0)}%`);
+    
+    updatePanVisual(trackId, track.pan);
+    
+    clearTimeout(track.panDebounceTimer);
+    track.panDebounceTimer = setTimeout(() => {
+        saveToHistory();
+        markProjectAsModified();
+    }, 500);
+}
+// ========================================
+// UPDATE VISUAL DO PAN (SEM RENDER FULL)
+// ========================================
+function updatePanVisual(trackId, panValue) {
+    const container = document.querySelector(`.pan-knob-container[data-track-id="${trackId}"]`);
+    if (!container) return;
+    
+    // Atualiza rotação do indicador
+    const indicator = container.querySelector('.pan-knob-indicator');
+    if (indicator) {
+        indicator.style.transform = `translateX(-50%) rotate(${panValue * 135}deg)`;
+    }
+    
+    // Atualiza cor do centro (verde quando no centro)
+    const isCenter = Math.abs(panValue) < 0.05;
+    if (isCenter) {
+        container.setAttribute('data-pan-center', 'true');
+    } else {
+        container.removeAttribute('data-pan-center');
+    }
+    
+    // Atualiza texto
+    const valueDisplay = container.closest('.track-channel').querySelector('.pan-value');
+    if (valueDisplay) {
+        valueDisplay.textContent = formatPan(panValue);
+    }
+}
+// ========================================
+// MASTER VOLUME FLUIDO
+// ========================================
 function handleMasterVolumeChange(value) {
     state.masterVolume = parseInt(value);
-    updateMasterGain();
-    saveToHistory();
-    markProjectAsModified();
-    render();
+    
+    // ✅ Aplica SEM fade
+    const targetValue = state.masterMute ? 0 : state.masterVolume / 100;
+    masterGainNode.gain.cancelScheduledValues(audioContext.currentTime);
+    masterGainNode.gain.setValueAtTime(targetValue, audioContext.currentTime);
+    
+    // ✅ Update visual com RAF
+    if (!state.masterVolumeUpdateScheduled) {
+        state.masterVolumeUpdateScheduled = true;
+        requestAnimationFrame(() => {
+            updateMasterVolumeVisual(state.masterVolume);
+            state.masterVolumeUpdateScheduled = false;
+        });
+    }
+    
+    // ✅ Debounce para salvar histórico
+    clearTimeout(state.masterVolumeDebounceTimer);
+    state.masterVolumeDebounceTimer = setTimeout(() => {
+        saveToHistory();
+        markProjectAsModified();
+    }, 500);
 }
 
-function toggleMasterMute() {
-    state.masterMute = !state.masterMute;
-    updateMasterGain();
-    saveToHistory();
-    markProjectAsModified();
-    render();
+// ========================================
+// UPDATE VISUAL DO MASTER (SEM RENDER)
+// ========================================
+function updateMasterVolumeVisual(volume) {
+    const masterTrack = document.querySelector('.master-track');
+    if (!masterTrack) return;
+    
+    // Atualiza barra
+    const faderLevel = masterTrack.querySelector('.fader-level');
+    if (faderLevel) {
+        faderLevel.style.height = `${volume}%`;
+    }
+    
+    // Atualiza handle
+    const faderHandle = masterTrack.querySelector('.fader-handle');
+    if (faderHandle) {
+        faderHandle.style.bottom = `calc(${volume}% - 28px)`;
+    }
+    
+    // Atualiza texto
+    const valueDisplay = masterTrack.querySelector('.volume-value');
+    if (valueDisplay) {
+        valueDisplay.textContent = volume;
+    }
 }
 
+// ========================================
+// TOGGLE SOLO - COM PAN MANUAL
+// ========================================
 function toggleSolo(trackId) {
     const track = state.tracks.find(t => t.id === trackId);
     if (!track) return;
@@ -1936,7 +2451,9 @@ function toggleSolo(trackId) {
     markProjectAsModified();
     render();
 }
-
+// ========================================
+// TOGGLE MUTE - COM PAN MANUAL
+// ========================================
 function toggleMute(trackId) {
     const track = state.tracks.find(t => t.id === trackId);
     if (!track) return;
@@ -1961,7 +2478,6 @@ function toggleMute(trackId) {
     markProjectAsModified();
     render();
 }
-
 // ========================================
 // LOADING OVERLAY
 // ========================================
@@ -2194,12 +2710,17 @@ async function saveCurrentProjectWithName(projectName) {
     console.log('🔍 Salvando projeto:', projectName);
     console.log('   - Modo:', state.storageMode);
     
-    showLoadingOverlay();
-    updateLoadingProgress(1, 1, 'Salvando projeto...');
+    showEnhancedLoading([
+        '📝 Preparando dados...',
+        '💾 Salvando arquivos...',
+        '✅ Finalizando...'
+    ]);
     
     // ========== MODO GOOGLE DRIVE ==========
     if (state.storageMode === 'drive' && state.googleDriveConnected) {
         try {
+            updateLoadingStep(0, 'complete');
+            
             // Prepara dados com áudios em base64
             const tracksWithAudio = await Promise.all(state.tracks.map(async (t) => {
                 let audioData = t.audioData;
@@ -2236,7 +2757,9 @@ async function saveCurrentProjectWithName(projectName) {
                 driveFileId: state.currentProject?.driveFileId
             };
             
+            updateLoadingStep(1, 'active');
             const savedProject = await saveProjectToDrive(projectData);
+            updateLoadingStep(1, 'complete');
             
             // Atualiza lista local
             if (state.currentProject) {
@@ -2253,14 +2776,19 @@ async function saveCurrentProjectWithName(projectName) {
             state.currentProject = savedProject;
             markProjectAsSaved();
             
-            hideLoadingOverlay();
-            showAlert(`✅ Projeto salvo no Google Drive!\n\n☁️ Sincronizado às ${state.lastSyncTime}`);
+            updateLoadingStep(2, 'complete');
+            hideEnhancedLoading();
+            
+            successToast(`Projeto salvo! Sincronizado às ${state.lastSyncTime}`, {
+                title: '☁️ Google Drive'
+            });
+            
             render();
             return;
             
         } catch (err) {
             console.error('❌ Erro ao salvar no Drive:', err);
-            hideLoadingOverlay();
+            hideEnhancedLoading();
             
             const shouldFallback = await showConfirm(
                 '❌ Erro ao salvar no Google Drive.\n\n' +
@@ -2274,130 +2802,141 @@ async function saveCurrentProjectWithName(projectName) {
         }
     }
     
-// ========== MODO PASTA LOCAL ==========
-if (supportsFileSystem && libraryFolderHandle) {
-    try {
-        // Verifica se ainda tem acesso à pasta
-        const hasPermission = await verifyPermission(libraryFolderHandle);
-        if (!hasPermission) {
-            hideLoadingOverlay();
-            showAlert(
-                '⚠️ Sem permissão para acessar a pasta.\n\n' +
-                'Selecione a pasta novamente nas Settings.'
-            );
-            return;
-        }
-        
-        // Cria nome único para pasta do projeto
-        const safeName = projectName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-        const timestamp = Date.now();
-        const folderName = `${safeName}_${timestamp}`;
-        
-        let projectFolder;
-        
-        // Se é atualização de projeto existente
-        if (state.currentProject?.folderName) {
-            try {
-                projectFolder = await libraryFolderHandle.getDirectoryHandle(
-                    state.currentProject.folderName
-                );
-                console.log('✅ Atualizando projeto existente');
-            } catch {
-                // Pasta não existe, cria nova
+    // ========== MODO PASTA LOCAL ==========
+    if (supportsFileSystem && libraryFolderHandle) {
+        try {
+            updateLoadingStep(0, 'complete');
+            
+            // Verifica se ainda tem acesso à pasta
+            const hasPermission = await verifyPermission(libraryFolderHandle);
+            if (!hasPermission) {
+                hideEnhancedLoading();
+                errorToast('Sem permissão para acessar a pasta. Selecione novamente nas Settings.', {
+                    title: 'Acesso Negado'
+                });
+                return;
+            }
+            
+            // Cria nome único para pasta do projeto
+            const safeName = projectName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+            const timestamp = Date.now();
+            const folderName = `${safeName}_${timestamp}`;
+            
+            let projectFolder;
+            
+            // Se é atualização de projeto existente
+            if (state.currentProject?.folderName) {
+                try {
+                    projectFolder = await libraryFolderHandle.getDirectoryHandle(
+                        state.currentProject.folderName
+                    );
+                    console.log('✅ Atualizando projeto existente');
+                } catch {
+                    // Pasta não existe, cria nova
+                    projectFolder = await libraryFolderHandle.getDirectoryHandle(
+                        folderName, 
+                        { create: true }
+                    );
+                    console.log('✅ Criando nova pasta:', folderName);
+                }
+            } else {
+                // Novo projeto - cria pasta
                 projectFolder = await libraryFolderHandle.getDirectoryHandle(
                     folderName, 
                     { create: true }
                 );
-                console.log('✅ Criando nova pasta:', folderName);
+                console.log('✅ Criando novo projeto:', folderName);
             }
-        } else {
-            // Novo projeto - cria pasta
-            projectFolder = await libraryFolderHandle.getDirectoryHandle(
-                folderName, 
-                { create: true }
-            );
-            console.log('✅ Criando novo projeto:', folderName);
-        }
-        
-        // Copia arquivos de áudio
-        const copiedFiles = await copyAudioFilesToProjectFolder(projectFolder, state.tracks);
-        
-        // Prepara dados do projeto (SEM audioData)
-        const tracksData = state.tracks.map((t, index) => {
-            const copiedFile = copiedFiles.find(cf => cf.trackId === t.id);
-            return {
-                id: t.id,
-                name: t.name,
-                volume: t.volume,
-                pan: t.pan,
-                solo: t.solo,
-                mute: t.mute,
-                color: t.color,
-                filename: copiedFile ? copiedFile.filename : null
+            
+            updateLoadingStep(1, 'active');
+            
+            // Copia arquivos de áudio
+            const copiedFiles = await copyAudioFilesToProjectFolder(projectFolder, state.tracks);
+            
+            updateLoadingStep(1, 'complete');
+            updateLoadingStep(2, 'active');
+            
+            // Prepara dados do projeto (SEM audioData)
+            const tracksData = state.tracks.map((t, index) => {
+                const copiedFile = copiedFiles.find(cf => cf.trackId === t.id);
+                return {
+                    id: t.id,
+                    name: t.name,
+                    volume: t.volume,
+                    pan: t.pan,
+                    solo: t.solo,
+                    mute: t.mute,
+                    color: t.color,
+                    filename: copiedFile ? copiedFile.filename : null
+                };
+            });
+            
+            const projectData = {
+                id: state.currentProject?.id || Date.now(),
+                name: projectName,
+                tracks: tracksData,
+                markers: [...state.markers],
+                markerShortcuts: {...state.markerShortcuts},
+                duration: state.duration,
+                masterVolume: state.masterVolume,
+                masterMute: state.masterMute,
+                bpm: state.bpm,
+                key: state.key,
+                fadeInTime: state.fadeInTime,
+                fadeOutTime: state.fadeOutTime,
+                createdAt: state.currentProject?.createdAt || new Date().toLocaleString('pt-BR'),
+                updatedAt: new Date().toLocaleString('pt-BR'),
+                folderName: state.currentProject?.folderName || folderName,
+                source: 'library'
             };
-        });
-        
-        const projectData = {
-            id: state.currentProject?.id || Date.now(),
-            name: projectName,
-            tracks: tracksData,
-            markers: [...state.markers],
-            markerShortcuts: {...state.markerShortcuts},
-            duration: state.duration,
-            masterVolume: state.masterVolume,
-            masterMute: state.masterMute,
-            bpm: state.bpm,
-            key: state.key,
-            fadeInTime: state.fadeInTime,
-            fadeOutTime: state.fadeOutTime,
-            createdAt: state.currentProject?.createdAt || new Date().toLocaleString('pt-BR'),
-            updatedAt: new Date().toLocaleString('pt-BR'),
-            folderName: state.currentProject?.folderName || folderName,
-            source: 'library'
-        };
-        
-        // Salva projeto.json
-        const jsonHandle = await projectFolder.getFileHandle('projeto.json', { create: true });
-        const writable = await jsonHandle.createWritable();
-        await writable.write(JSON.stringify(projectData, null, 2));
-        await writable.close();
-        
-        // Atualiza state
-        if (state.currentProject) {
-            const index = state.savedProjects.findIndex(p => p.id === state.currentProject.id);
-            if (index !== -1) {
-                state.savedProjects[index] = projectData;
+            
+            // Salva projeto.json
+            const jsonHandle = await projectFolder.getFileHandle('projeto.json', { create: true });
+            const writable = await jsonHandle.createWritable();
+            await writable.write(JSON.stringify(projectData, null, 2));
+            await writable.close();
+            
+            // Atualiza state
+            if (state.currentProject) {
+                const index = state.savedProjects.findIndex(p => p.id === state.currentProject.id);
+                if (index !== -1) {
+                    state.savedProjects[index] = projectData;
+                } else {
+                    state.savedProjects.push(projectData);
+                }
             } else {
                 state.savedProjects.push(projectData);
             }
-        } else {
-            state.savedProjects.push(projectData);
+            
+            state.currentProject = projectData;
+            markProjectAsSaved();
+            
+            updateLoadingStep(2, 'complete');
+            hideEnhancedLoading();
+            
+            successToast(`Projeto salvo! Pasta: ${state.libraryPath}`, {
+                title: '📁 Biblioteca Local'
+            });
+            
+            render();
+            console.log('✅ Projeto salvo com sucesso');
+            return;
+            
+        } catch (err) {
+            console.error('❌ Erro ao salvar na pasta local:', err);
+            hideEnhancedLoading();
+            
+            const shouldFallback = await showConfirm(
+                '❌ Erro ao salvar na pasta local.\n\n' +
+                'Deseja exportar como arquivo .mtp?'
+            );
+            
+            if (shouldFallback) {
+                exportProjectAsFileFallback();
+            }
+            return;
         }
-        
-        state.currentProject = projectData;
-        markProjectAsSaved();
-        
-        hideLoadingOverlay();
-        showAlert(`✅ Projeto salvo na biblioteca!\n\n📁 Pasta: ${state.libraryPath}`);
-        render();
-        console.log('✅ Projeto salvo com sucesso');
-        return;
-        
-    } catch (err) {
-        console.error('❌ Erro ao salvar na pasta local:', err);
-        hideLoadingOverlay();
-        
-        const shouldFallback = await showConfirm(
-            '❌ Erro ao salvar na pasta local.\n\n' +
-            'Deseja exportar como arquivo .mtp?'
-        );
-        
-        if (shouldFallback) {
-            exportProjectAsFileFallback();
-        }
-        return;
     }
-}
 }
 
 async function ensureLibraryAccess() {
@@ -2532,26 +3071,79 @@ async function exportProjectAsFileFallback() {
 // Local: Linha ~1050
 // ========================================
 
+// ========================================
+// FUNÇÃO COMPLETA loadProject() - VERSÃO ULTRA OTIMIZADA
+// Substitua a função inteira pelo código abaixo
+// ========================================
+
+// ========================================
+// loadProject() - COM CACHE E PRELOAD
+// ========================================
+
+// ========================================
+// loadProject() - COM PAN MANUAL INSTANTÂNEO
+// ========================================
+
+// ========================================
+// loadProject() - VERSÃO 100% CORRIGIDA
+// Substitua a função inteira (busque por "async function loadProject")
+// ========================================
+
 async function loadProject(project) {
-    showLoadingOverlay();
+    console.log('🔍 ========== loadProject() INICIADO ==========');
+    console.log('   - ID:', project.id);
+    console.log('   - Nome:', project.name);
+    console.log('   - Source:', project.source);
+    console.log('   - DriveFileId:', project.driveFileId);
+    console.log('   - FolderName:', project.folderName);
+    
+    // ⚡ CACHE
+    const cachedProject = projectCache.get(project.id);
+    if (cachedProject?.cachedAudioFiles?.length > 0) {
+        console.log('⚡ CACHE HIT!');
+        return await loadProjectFromCache(cachedProject);
+    }
+    
+    console.log('❌ Cache miss - Carregando...');
+    
+    showEnhancedLoading([
+        '📥 Carregando metadados...',
+        '🔊 Baixando áudios...',
+        '🎵 Criando tracks...',
+        '✅ Finalizando...'
+    ]);
 
     try {
         let projectData = project;
 
-        // ========== CARREGA DA BIBLIOTECA (PASTA) ==========
+        // ========================================
+        // BIBLIOTECA LOCAL - ✅ CORRIGIDO
+        // ========================================
         if (project.source === 'library' && project.folderName && libraryFolderHandle) {
-            // Abre pasta do projeto
-            const projectFolder = await libraryFolderHandle.getDirectoryHandle(project.folderName);
+            console.log('📁 ========== MODO BIBLIOTECA LOCAL ==========');
+            updateLoadingStep(0, 'active');
+            
+            // ✅ CORREÇÃO: Define projectFolder aqui!
+            let projectFolder;
+            
+            try {
+                projectFolder = await libraryFolderHandle.getDirectoryHandle(project.folderName);
+                const fileHandle = await projectFolder.getFileHandle('projeto.json');
+                const file = await fileHandle.getFile();
+                const text = await file.text();
+                projectData = JSON.parse(text);
+                projectData.folderName = project.folderName;
+                projectData.source = 'library';
+                
+                console.log('   ✅ projeto.json carregado');
+                console.log('   - Tracks:', projectData.tracks.length);
+            } catch (err) {
+                console.error('   ❌ Erro ao ler projeto.json:', err);
+                hideEnhancedLoading();
+                errorToast('Não foi possível ler o projeto da pasta local');
+                return;
+            }
 
-            // Lê projeto.json
-            const fileHandle = await projectFolder.getFileHandle('projeto.json');
-            const file = await fileHandle.getFile();
-            const text = await file.text();
-            projectData = JSON.parse(text);
-            projectData.folderName = project.folderName;
-            projectData.source = 'library';
-
-            // Restaura configurações
             state.currentProject = projectData;
             state.markers = [...projectData.markers];
             state.markerShortcuts = {...(projectData.markerShortcuts || {})};
@@ -2564,46 +3156,45 @@ async function loadProject(project) {
             state.fadeOutTime = projectData.fadeOutTime || 1.5;
 
             updateMasterGain();
+            updateLoadingStep(0, 'complete');
+            updateLoadingStep(1, 'active');
 
             const newTracks = [];
 
-            // Carrega cada track
             for (let i = 0; i < projectData.tracks.length; i++) {
                 const trackData = projectData.tracks[i];
-                updateLoadingProgress(i + 1, projectData.tracks.length, trackData.name);
+                console.log(`   🔨 [${i+1}/${projectData.tracks.length}] ${trackData.name}...`);
 
                 try {
-                    // Carrega arquivo de áudio da pasta
                     if (!trackData.filename) {
-                        console.error(`Track ${trackData.name} sem filename`);
+                        console.warn('      ⚠️ Track sem filename');
                         continue;
                     }
 
+                    // ✅ USA projectFolder que foi definido acima
                     const audioFileHandle = await projectFolder.getFileHandle(trackData.filename);
                     const audioFile = await audioFileHandle.getFile();
-
-                    // Cria elemento de áudio
                     const audioElement = await createAudioElement(audioFile);
-
-                    // Cria nodes de áudio
+                    
                     const source = audioContext.createMediaElementSource(audioElement);
                     const gainNode = audioContext.createGain();
-                    const panNode = audioContext.createStereoPanner();
+                    const splitter = audioContext.createChannelSplitter(2);
+                    const merger = audioContext.createChannelMerger(2);
+                    const leftGain = audioContext.createGain();
+                    const rightGain = audioContext.createGain();
                     const analyserNode = audioContext.createAnalyser();
 
                     analyserNode.fftSize = 256;
                     analyserNode.smoothingTimeConstant = 0.8;
 
-                    // Roteamento
-                    source.connect(panNode);
-                    panNode.connect(gainNode);
+                    source.connect(splitter);
+                    splitter.connect(leftGain, 0);
+                    splitter.connect(rightGain, 1);
+                    leftGain.connect(merger, 0, 0);
+                    rightGain.connect(merger, 0, 1);
+                    merger.connect(gainNode);
                     gainNode.connect(analyserNode);
                     analyserNode.connect(masterGainNode);
-
-                    // Força stereo
-                    source.channelCount = 2;
-                    source.channelCountMode = 'explicit';
-                    source.channelInterpretation = 'speakers';
 
                     const track = {
                         id: trackData.id,
@@ -2613,10 +3204,13 @@ async function loadProject(project) {
                         solo: trackData.solo,
                         mute: trackData.mute,
                         color: trackData.color,
-                        originalFile: audioFile,  // ← Salva referência ao arquivo
+                        originalFile: audioFile,
                         audioElement: audioElement,
                         gainNode: gainNode,
-                        panNode: panNode,
+                        leftGain: leftGain,
+                        rightGain: rightGain,
+                        splitter: splitter,
+                        merger: merger,
                         sourceNode: source,
                         analyserNode: analyserNode,
                         vuLevel: 0,
@@ -2625,7 +3219,11 @@ async function loadProject(project) {
                     };
 
                     gainNode.gain.value = track.volume / 100;
-                    panNode.pan.value = track.pan;
+                    
+                    const leftGainValue = Math.max(0, 1 - track.pan);
+                    const rightGainValue = Math.max(0, 1 + track.pan);
+                    leftGain.gain.value = leftGainValue;
+                    rightGain.gain.value = rightGainValue;
 
                     audioElement.addEventListener('timeupdate', () => {
                         if (state.isPlaying) state.currentTime = audioElement.currentTime;
@@ -2645,13 +3243,17 @@ async function loadProject(project) {
                     });
 
                     newTracks.push(track);
+                    console.log(`      ✅ Track ${trackData.name} criada`);
 
                 } catch (error) {
-                    console.error('Erro ao carregar track:', trackData.name, error);
+                    console.error(`      ❌ Erro ao criar track ${trackData.name}:`, error);
                 }
 
-                await new Promise(resolve => setTimeout(resolve, 200));
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
+
+            updateLoadingStep(1, 'complete');
+            updateLoadingStep(2, 'active');
 
             state.tracks = newTracks;
             state.currentTime = 0;
@@ -2662,14 +3264,177 @@ async function loadProject(project) {
             historyIndex = -1;
             saveToHistory();
 
-            hideLoadingOverlay();
+            updateLoadingStep(2, 'complete');
+            updateLoadingStep(3, 'complete');
+            hideEnhancedLoading();
+            
+            successToast(`${newTracks.length} tracks carregadas!`, {
+                title: '📁 ' + projectData.name
+            });
+            
+            markProjectAsSaved();
             render();
+            console.log('✅ ========== BIBLIOTECA LOCAL OK ==========');
             return;
         }
 
-        // ========== CARREGA DE .MTP IMPORTADO (COM BASE64) ==========
-        // Fallback para arquivos .mtp que ainda têm audioData
+        // ========================================
+        // GOOGLE DRIVE - ✅ CORRIGIDO
+        // ========================================
+        if (project.source === 'drive' && project.driveFileId && state.googleDriveConnected) {
+            console.log('☁️ ========== MODO GOOGLE DRIVE ==========');
+            
+            try {
+                updateLoadingStep(0, 'active');
+                
+                const projectFolderId = project.driveFileId;
+                console.log('   📁 Pasta do projeto:', projectFolderId);
+                
+                const jsonSearch = await gapi.client.drive.files.list({
+                    q: `name='projeto.json' and '${projectFolderId}' in parents and trashed=false`,
+                    fields: 'files(id)'
+                });
+                
+                if (jsonSearch.result.files.length === 0) {
+                    throw new Error('projeto.json não encontrado');
+                }
+                
+                console.log('   ✅ projeto.json encontrado');
+                
+                const jsonContent = await gapi.client.drive.files.get({
+                    fileId: jsonSearch.result.files[0].id,
+                    alt: 'media'
+                });
+                
+                projectData = JSON.parse(jsonContent.body);
+                projectData.source = 'drive';
+                projectData.driveFileId = projectFolderId;
+                
+                console.log('   ✅ Metadados carregados');
+                console.log('   - Tracks:', projectData.tracks.length);
+                
+                state.currentProject = projectData;
+                state.markers = [...projectData.markers];
+                state.markerShortcuts = {...(projectData.markerShortcuts || {})};
+                state.duration = projectData.duration;
+                state.masterVolume = projectData.masterVolume;
+                state.masterMute = projectData.masterMute || false;
+                state.bpm = projectData.bpm || 120;
+                state.key = projectData.key || 'C';
+                state.fadeInTime = projectData.fadeInTime || 0.5;
+                state.fadeOutTime = projectData.fadeOutTime || 1.5;
+                
+                updateMasterGain();
+                updateLoadingStep(0, 'complete');
+                updateLoadingStep(1, 'active');
+                
+                console.log('   ⚡ Baixando áudios...');
+                
+                // ✅ CORREÇÃO: USA GAPI AO INVÉS DE FETCH (mais confiável)
+                const downloadPromises = projectData.tracks.map(async (trackData, index) => {
+                    if (!trackData.driveFileId) {
+                        console.warn(`   ⚠️ Track ${trackData.name} sem driveFileId`);
+                        return null;
+                    }
+                    
+                    try {
+                        console.log(`      📥 [${index+1}/${projectData.tracks.length}] ${trackData.name}...`);
+                        
+                        // ✅ USA GAPI (não fetch!)
+                        const audioResponse = await gapi.client.drive.files.get({
+                            fileId: trackData.driveFileId,
+                            alt: 'media'
+                        });
+                        
+                        // Converte resposta GAPI para Blob
+                        const binaryString = audioResponse.body;
+                        const len = binaryString.length;
+                        const bytes = new Uint8Array(len);
+                        
+                        for (let i = 0; i < len; i++) {
+                            bytes[i] = binaryString.charCodeAt(i);
+                        }
+                        
+                        const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+                        const audioFile = new File(
+                            [audioBlob], 
+                            trackData.filename || 'track.mp3', 
+                            { type: 'audio/mpeg' }
+                        );
+                        
+                        console.log(`      ✅ ${trackData.name} (${(audioBlob.size / 1024 / 1024).toFixed(2)} MB)`);
+                        
+                        return { trackData, audioFile };
+                        
+                    } catch (err) {
+                        console.error(`      ❌ Erro: ${trackData.name}`, err.message);
+                        return null;
+                    }
+                });
+                
+                const downloadedTracks = await Promise.all(downloadPromises);
+                const validTracks = downloadedTracks.filter(t => t !== null);
+                
+                console.log(`   ✅ ${validTracks.length}/${projectData.tracks.length} áudios baixados`);
+                
+                if (validTracks.length === 0) {
+                    throw new Error('Nenhum áudio foi baixado');
+                }
+                
+                projectData.cachedAudioFiles = validTracks;
+                await projectCache.set(project.id, projectData);
+                
+                updateLoadingStep(1, 'complete');
+                updateLoadingStep(2, 'active');
+                
+                const newTracks = await createAudioTracksFromFiles(validTracks);
+                
+                if (newTracks.length === 0) {
+                    throw new Error('Falha ao criar tracks');
+                }
+                
+                state.tracks = newTracks;
+                state.currentTime = 0;
+                state.isPlaying = false;
+                state.activeTab = 'mixer';
+                
+                history = [];
+                historyIndex = -1;
+                saveToHistory();
+                
+                updateLoadingStep(2, 'complete');
+                updateLoadingStep(3, 'complete');
+                hideEnhancedLoading();
+                
+                markProjectAsSaved();
+                
+                successToast(`${newTracks.length} tracks prontas!`, {
+                    title: '☁️ ' + projectData.name
+                });
+                
+                render();
+                suggestPreloadProjects(project.id);
+                
+                console.log('✅ ========== GOOGLE DRIVE OK ==========');
+                return;
+                
+            } catch (err) {
+                console.error('❌ ========== ERRO GOOGLE DRIVE ==========');
+                console.error('   - Erro:', err.message);
+                hideEnhancedLoading();
+                errorToast('Erro ao carregar: ' + err.message);
+                return;
+            }
+        }
+
+        // ========================================
+        // .MTP IMPORTADO
+        // ========================================
         if (projectData.tracks && projectData.tracks[0]?.audioData) {
+            console.log('📦 ========== MODO .MTP ==========');
+            
+            updateLoadingStep(0, 'active');
+            
             state.currentProject = projectData;
             state.markers = [...projectData.markers];
             state.markerShortcuts = {...(projectData.markerShortcuts || {})};
@@ -2682,31 +3447,37 @@ async function loadProject(project) {
             state.fadeOutTime = projectData.fadeOutTime || 1.5;
 
             updateMasterGain();
+            updateLoadingStep(0, 'complete');
+            updateLoadingStep(1, 'active');
 
             const newTracks = [];
 
             for (let i = 0; i < projectData.tracks.length; i++) {
                 const trackData = projectData.tracks[i];
-                updateLoadingProgress(i + 1, projectData.tracks.length, trackData.name);
+                console.log(`   🔨 [${i+1}/${projectData.tracks.length}] ${trackData.name}...`);
 
                 try {
                     const audioElement = await base64ToAudioElement(trackData.audioData);
+                    
                     const source = audioContext.createMediaElementSource(audioElement);
                     const gainNode = audioContext.createGain();
-                    const panNode = audioContext.createStereoPanner();
+                    const splitter = audioContext.createChannelSplitter(2);
+                    const merger = audioContext.createChannelMerger(2);
+                    const leftGain = audioContext.createGain();
+                    const rightGain = audioContext.createGain();
                     const analyserNode = audioContext.createAnalyser();
 
                     analyserNode.fftSize = 256;
                     analyserNode.smoothingTimeConstant = 0.8;
 
-                    source.connect(panNode);
-                    panNode.connect(gainNode);
+                    source.connect(splitter);
+                    splitter.connect(leftGain, 0);
+                    splitter.connect(rightGain, 1);
+                    leftGain.connect(merger, 0, 0);
+                    rightGain.connect(merger, 0, 1);
+                    merger.connect(gainNode);
                     gainNode.connect(analyserNode);
                     analyserNode.connect(masterGainNode);
-
-                    source.channelCount = 2;
-                    source.channelCountMode = 'explicit';
-                    source.channelInterpretation = 'speakers';
 
                     const track = {
                         id: trackData.id,
@@ -2716,10 +3487,13 @@ async function loadProject(project) {
                         solo: trackData.solo,
                         mute: trackData.mute,
                         color: trackData.color,
-                        audioData: trackData.audioData,  // Mantém para compatibilidade
+                        audioData: trackData.audioData,
                         audioElement: audioElement,
                         gainNode: gainNode,
-                        panNode: panNode,
+                        leftGain: leftGain,
+                        rightGain: rightGain,
+                        splitter: splitter,
+                        merger: merger,
                         sourceNode: source,
                         analyserNode: analyserNode,
                         vuLevel: 0,
@@ -2728,7 +3502,11 @@ async function loadProject(project) {
                     };
 
                     gainNode.gain.value = track.volume / 100;
-                    panNode.pan.value = track.pan;
+                    
+                    const leftGainValue = Math.max(0, 1 - track.pan);
+                    const rightGainValue = Math.max(0, 1 + track.pan);
+                    leftGain.gain.value = leftGainValue;
+                    rightGain.gain.value = rightGainValue;
 
                     audioElement.addEventListener('timeupdate', () => {
                         if (state.isPlaying) state.currentTime = audioElement.currentTime;
@@ -2748,13 +3526,17 @@ async function loadProject(project) {
                     });
 
                     newTracks.push(track);
+                    console.log(`      ✅ Track criada`);
 
                 } catch (error) {
-                    console.error('Erro ao carregar track:', trackData.name, error);
+                    console.error(`      ❌ Erro: ${trackData.name}:`, error);
                 }
 
-                await new Promise(resolve => setTimeout(resolve, 200));
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
+
+            updateLoadingStep(1, 'complete');
+            updateLoadingStep(2, 'active');
 
             state.tracks = newTracks;
             state.currentTime = 0;
@@ -2765,16 +3547,283 @@ async function loadProject(project) {
             historyIndex = -1;
             saveToHistory();
 
-            hideLoadingOverlay();
-            render();
+            updateLoadingStep(2, 'complete');
+            updateLoadingStep(3, 'complete');
+            hideEnhancedLoading();
+            
+            successToast(`${newTracks.length} tracks importadas!`, {
+                title: '📦 ' + projectData.name
+            });
+            
             markProjectAsSaved();
+            render();
+            console.log('✅ ========== .MTP OK ==========');
+            return;
         }
+        
+        throw new Error('Formato não reconhecido');
 
     } catch (err) {
-        console.error('Erro ao carregar projeto:', err);
-        hideLoadingOverlay();
-        showAlert('❌ Erro ao carregar projeto: ' + err.message);
+        console.error('❌ ========== ERRO FATAL ==========');
+        console.error('   - Erro:', err.message);
+        hideEnhancedLoading();
+        errorToast('Erro: ' + err.message);
     }
+}
+// ========================================
+// FUNÇÕES AUXILIARES DO CACHE
+// ========================================
+
+// ========================================
+// CARREGAR DO CACHE - VERSÃO CORRIGIDA
+// ========================================
+
+// ========================================
+// CARREGAR DO CACHE - COM PAN MANUAL
+// ========================================
+
+
+async function loadProjectFromCache(cachedProjectData) {
+    console.log('⚡ ========== CARREGANDO DO CACHE ==========');
+    console.log('   - Projeto:', cachedProjectData.name);
+    console.log('   - Cached tracks:', cachedProjectData.cachedAudioFiles?.length);
+    
+    showLoadingOverlay();
+    updateLoadingProgress(1, 1, 'Carregando do cache...');
+    
+    try {
+        // Restaura configurações
+        state.currentProject = cachedProjectData;
+        state.markers = [...cachedProjectData.markers];
+        state.markerShortcuts = {...(cachedProjectData.markerShortcuts || {})};
+        state.duration = cachedProjectData.duration;
+        state.masterVolume = cachedProjectData.masterVolume;
+        state.masterMute = cachedProjectData.masterMute || false;
+        state.bpm = cachedProjectData.bpm || 120;
+        state.key = cachedProjectData.key || 'C';
+        state.fadeInTime = cachedProjectData.fadeInTime || 0.5;
+        state.fadeOutTime = cachedProjectData.fadeOutTime || 1.5;
+        
+        updateMasterGain();
+        console.log('✅ Configurações restauradas');
+        
+        // Verifica se tem arquivos em cache
+        if (!cachedProjectData.cachedAudioFiles || cachedProjectData.cachedAudioFiles.length === 0) {
+            throw new Error('Nenhum arquivo de áudio em cache');
+        }
+        
+        console.log('🔨 Criando AudioElements...');
+        const newTracks = await createAudioTracksFromFiles(cachedProjectData.cachedAudioFiles);
+        
+        console.log(`✅ ${newTracks.length} tracks criadas!`);
+        
+        // Atualiza state
+        state.tracks = newTracks;
+        state.currentTime = 0;
+        state.isPlaying = false;
+        state.activeTab = 'mixer';
+        
+        history = [];
+        historyIndex = -1;
+        saveToHistory();
+        
+        hideLoadingOverlay();
+        markProjectAsSaved();
+        render();
+        
+        // Preload próximos
+        suggestPreloadProjects(cachedProjectData.id);
+        
+        console.log('⚡⚡⚡ ========== CACHE CARREGADO COM SUCESSO ==========');
+        
+    } catch (err) {
+        console.error('❌ ========== ERRO AO CARREGAR DO CACHE ==========');
+        console.error('   - Erro:', err);
+        hideLoadingOverlay();
+        showAlert('❌ Erro ao carregar do cache:\n\n' + err.message);
+    }
+}
+// ========================================
+// CRIAR TRACKS DE ARQUIVOS - VERSÃO CORRIGIDA
+// ========================================
+
+// ========================================
+// CRIAR TRACKS DE ARQUIVOS - COM PAN MANUAL
+// ========================================
+async function createAudioTracksFromFiles(downloadedTracks) {
+    console.log('🔨 ========== createAudioTracksFromFiles ==========');
+    console.log('   - downloadedTracks:', downloadedTracks?.length);
+    
+    const newTracks = [];
+    
+    if (!downloadedTracks || !Array.isArray(downloadedTracks) || downloadedTracks.length === 0) {
+        console.error('❌ downloadedTracks inválido ou vazio!');
+        return newTracks;
+    }
+    
+    for (let i = 0; i < downloadedTracks.length; i++) {
+        const downloaded = downloadedTracks[i];
+        
+        if (!downloaded) {
+            console.warn(`⚠️ Track ${i} é null/undefined`);
+            continue;
+        }
+        
+        console.log(`   📍 [${i + 1}/${downloadedTracks.length}] Processando...`);
+        
+        const { trackData, audioFile } = downloaded;
+        
+        if (!trackData) {
+            console.error(`   ❌ Track ${i} sem trackData`);
+            continue;
+        }
+        
+        if (!audioFile) {
+            console.error(`   ❌ Track ${i} (${trackData.name}) sem audioFile`);
+            continue;
+        }
+        
+        try {
+            console.log(`   🔨 Criando AudioElement: ${trackData.name}`);
+            
+            const audioElement = await createAudioElement(audioFile);
+            console.log('      ✅ AudioElement criado');
+            
+            const source = audioContext.createMediaElementSource(audioElement);
+            const gainNode = audioContext.createGain();
+            const splitter = audioContext.createChannelSplitter(2);
+            const merger = audioContext.createChannelMerger(2);
+            const leftGain = audioContext.createGain();
+            const rightGain = audioContext.createGain();
+            const analyserNode = audioContext.createAnalyser();
+            
+            analyserNode.fftSize = 256;
+            analyserNode.smoothingTimeConstant = 0.8;
+            
+            source.connect(splitter);
+            splitter.connect(leftGain, 0);
+            splitter.connect(rightGain, 1);
+            leftGain.connect(merger, 0, 0);
+            rightGain.connect(merger, 0, 1);
+            merger.connect(gainNode);
+            gainNode.connect(analyserNode);
+            analyserNode.connect(masterGainNode);
+            
+            console.log('      ✅ Nodes conectados');
+            
+            const track = {
+                id: trackData.id,
+                name: trackData.name,
+                volume: trackData.volume || 75,
+                pan: trackData.pan || 0,
+                solo: trackData.solo || false,
+                mute: trackData.mute || false,
+                color: trackData.color || 'color-blue',
+                originalFile: audioFile,
+                audioElement: audioElement,
+                gainNode: gainNode,
+                leftGain: leftGain,
+                rightGain: rightGain,
+                splitter: splitter,
+                merger: merger,
+                sourceNode: source,
+                analyserNode: analyserNode,
+                vuLevel: 0,
+                vuPeak: 0,
+                vuClip: false
+            };
+            
+            gainNode.gain.value = track.volume / 100;
+            
+            const leftGainValue = Math.max(0, 1 - track.pan);
+            const rightGainValue = Math.max(0, 1 + track.pan);
+            leftGain.gain.value = leftGainValue;
+            rightGain.gain.value = rightGainValue;
+            
+            audioElement.addEventListener('timeupdate', () => {
+                if (state.isPlaying) state.currentTime = audioElement.currentTime;
+            });
+            
+            audioElement.addEventListener('ended', () => {
+                if (state.isPlaying) {
+                    const allEnded = state.tracks.every(t =>
+                        !t.audioElement || t.audioElement.ended || t.audioElement.paused
+                    );
+                    if (allEnded) {
+                        state.isPlaying = false;
+                        stopBPMPulse();
+                        render();
+                    }
+                }
+            });
+            
+            newTracks.push(track);
+            console.log(`      ✅ Track ${trackData.name} COMPLETA!`);
+            
+        } catch (error) {
+            console.error(`   ❌ Erro ao criar track ${trackData.name}:`, error);
+            console.error('      Stack:', error.stack);
+        }
+    }
+    
+    console.log('✅ ========== createAudioTracksFromFiles CONCLUÍDO ==========');
+    console.log(`   - Total criadas: ${newTracks.length}/${downloadedTracks.length}`);
+    
+    return newTracks;
+}
+function suggestPreloadProjects(currentProjectId) {
+    const currentIndex = state.savedProjects.findIndex(p => p.id === currentProjectId);
+    
+    if (currentIndex !== -1) {
+        // Próximo
+        if (currentIndex + 1 < state.savedProjects.length) {
+            const nextProject = state.savedProjects[currentIndex + 1];
+            if (nextProject.source === 'drive') {
+                preloadQueue.add(nextProject.id);
+            }
+        }
+        
+        // Anterior
+        if (currentIndex - 1 >= 0) {
+            const prevProject = state.savedProjects[currentIndex - 1];
+            if (prevProject.source === 'drive') {
+                preloadQueue.add(prevProject.id);
+            }
+        }
+    }
+}
+
+async function preloadAllProjects() {
+    const driveProjects = state.savedProjects.filter(p => p.source === 'drive');
+    
+    if (driveProjects.length === 0) {
+        showAlert('Nenhum projeto do Drive');
+        return;
+    }
+    
+    const confirmed = await showConfirm(
+        `⚡ Pré-carregar ${driveProjects.length} projeto(s)?\n\n` +
+        `Tempo estimado: ~${driveProjects.length * 10}s`
+    );
+    
+    if (!confirmed) return;
+    
+    showLoadingOverlay();
+    updateLoadingProgress(0, driveProjects.length, 'Preparando...');
+    
+    for (let i = 0; i < driveProjects.length; i++) {
+        const project = driveProjects[i];
+        updateLoadingProgress(i + 1, driveProjects.length, `Baixando ${project.name}...`);
+        
+        if (!projectCache.has(project.id)) {
+            await preloadProjectFromDrive(project);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    hideLoadingOverlay();
+    showAlert(`✅ ${driveProjects.length} projeto(s) prontos!\n\n⚡ Troca instantânea ativada!`);
 }
 
 async function exportProjectFromLibrary(projectId, event) {
@@ -3228,6 +4277,22 @@ function showPrompt(title, defaultValue = '') {
 }
 
 function showAlert(message) {
+    // Se mensagem começa com ✅, usa toast success
+    if (message.startsWith('✅')) {
+        return successToast(message.replace('✅', '').trim());
+    }
+    
+    // Se mensagem começa com ❌, usa toast error
+    if (message.startsWith('❌')) {
+        return errorToast(message.replace('❌', '').trim());
+    }
+    
+    // Se mensagem começa com ⚠️, usa toast warning
+    if (message.startsWith('⚠️')) {
+        return warningToast(message.replace('⚠️', '').trim());
+    }
+    
+    // Caso contrário, usa modal tradicional (para mensagens longas)
     return new Promise(resolve => {
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay';
@@ -3408,7 +4473,12 @@ function render() {
                     <i data-lucide="music" class="logo-icon"></i>
                     <div>
                         <div class="logo-text">MultiTrack Pro</div>
-                        ${state.currentProject ? `<div class="project-name">${state.currentProject.name}</div>` : ''}
+                        ${state.currentProject ? `
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <div class="project-name">${state.currentProject.name}</div>
+                                ${getProjectStatusBadge()}
+                            </div>
+                        ` : ''}
                     </div>
                 </div>
                 <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.25rem;">
@@ -3661,6 +4731,10 @@ function renderLibrary() {
                                 <i data-lucide="files"></i>
                                 <span>Importar Projetos (.mtp)</span>
                             </button>
+                             <button class="import-btn" onclick="preloadAllProjects()" style="background: #8b5cf6;">
+    <i data-lucide="zap"></i>
+    <span>⚡ Pré-carregar Todos (Modo Ao Vivo)</span>
+</button>
                             <button class="import-btn load-folder-library-btn">
                                 <i data-lucide="folder-open"></i>
                                 <span>Carregar Pasta MP3</span>
@@ -3889,7 +4963,37 @@ function renderStorageInfo() {
 
 function attachDynamicEventListeners() {
     // ========================================
-    // FADERS (NON-MASTER) - TOUCH ISOLADO
+    // WAVEFORM SCRUBBING - SIMPLIFICADO E FUNCIONAL
+    // ========================================
+    const waveformContainer = document.querySelector('.waveform-container');
+    if (waveformContainer) {
+        let isWaveformDragging = false;
+        
+        waveformContainer.addEventListener('mousedown', (e) => {
+            // Ignora cliques em markers
+            if (e.target.closest('.marker') || e.target.closest('.marker-delete')) return;
+            
+            isWaveformDragging = true;
+            handleWaveformInteraction(e);
+            document.body.style.cursor = 'ew-resize';
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+            if (isWaveformDragging) {
+                handleWaveformInteraction(e);
+            }
+        });
+        
+        document.addEventListener('mouseup', () => {
+            if (isWaveformDragging) {
+                isWaveformDragging = false;
+                document.body.style.cursor = '';
+            }
+        });
+    }
+
+    // ========================================
+    // FADERS (NON-MASTER) - MOUSE GLOBAL
     // ========================================
     document.querySelectorAll('.fader-wrapper[data-track-id]').forEach(wrapper => {
         let isDragging = false;
@@ -3897,34 +5001,34 @@ function attachDynamicEventListeners() {
         let startValue = 0;
         const trackId = parseFloat(wrapper.dataset.trackId);
         
-        const onMouseDown = (e) => {
+        wrapper.addEventListener('mousedown', (e) => {
             e.stopPropagation();
             isDragging = true;
             const track = state.tracks.find(t => t.id === trackId);
             startY = e.clientY;
             startValue = track ? track.volume : 75;
             wrapper.classList.add('dragging');
+            document.body.style.cursor = 'ns-resize';
             e.preventDefault();
-        };
+        });
         
-        const onMouseMove = (e) => {
+        document.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
-            e.stopPropagation();
             const deltaY = startY - e.clientY;
             const sensitivity = 0.6;
             const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
             handleVolumeChange(trackId, newValue);
-            e.preventDefault();
-        };
+        });
         
-        const onMouseUp = (e) => {
+        document.addEventListener('mouseup', () => {
             if (!isDragging) return;
-            e.stopPropagation();
             isDragging = false;
             wrapper.classList.remove('dragging');
-        };
+            document.body.style.cursor = '';
+        });
         
-        const onTouchStart = (e) => {
+        // Touch events
+        wrapper.addEventListener('touchstart', (e) => {
             e.stopPropagation();
             isDragging = true;
             const track = state.tracks.find(t => t.id === trackId);
@@ -3933,9 +5037,9 @@ function attachDynamicEventListeners() {
             startValue = track ? track.volume : 75;
             wrapper.classList.add('dragging');
             e.preventDefault();
-        };
+        }, { passive: false });
         
-        const onTouchMove = (e) => {
+        wrapper.addEventListener('touchmove', (e) => {
             if (!isDragging) return;
             e.stopPropagation();
             const touch = e.touches[0];
@@ -3944,28 +5048,17 @@ function attachDynamicEventListeners() {
             const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
             handleVolumeChange(trackId, newValue);
             e.preventDefault();
-        };
+        }, { passive: false });
         
-        const onTouchEnd = (e) => {
+        wrapper.addEventListener('touchend', () => {
             if (!isDragging) return;
-            e.stopPropagation();
             isDragging = false;
             wrapper.classList.remove('dragging');
-        };
-        
-        wrapper.addEventListener('mousedown', onMouseDown);
-        wrapper.addEventListener('mousemove', onMouseMove);
-        wrapper.addEventListener('mouseup', onMouseUp);
-        wrapper.addEventListener('mouseleave', onMouseUp);
-        
-        wrapper.addEventListener('touchstart', onTouchStart, { passive: false });
-        wrapper.addEventListener('touchmove', onTouchMove, { passive: false });
-        wrapper.addEventListener('touchend', onTouchEnd);
-        wrapper.addEventListener('touchcancel', onTouchEnd);
+        });
     });
 
     // ========================================
-    // PAN KNOBS - TOUCH ISOLADO
+    // PAN KNOBS - MOUSE GLOBAL CORRIGIDO
     // ========================================
     document.querySelectorAll('.pan-knob-container[data-track-id]').forEach(container => {
         let isDragging = false;
@@ -3973,38 +5066,39 @@ function attachDynamicEventListeners() {
         let startValue = 0;
         const trackId = parseFloat(container.dataset.trackId);
         
-        const onMouseDown = (e) => {
+        container.addEventListener('mousedown', (e) => {
             e.stopPropagation();
             isDragging = true;
             const track = state.tracks.find(t => t.id === trackId);
             startY = e.clientY;
             startValue = track ? track.pan : 0;
             container.classList.add('dragging');
+            document.body.style.cursor = 'ns-resize';
             e.preventDefault();
-        };
+        });
         
-        const onMouseMove = (e) => {
+        document.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
-            e.stopPropagation();
             const deltaY = startY - e.clientY;
-            const sensitivity = 0.004;
+            const sensitivity = 0.01; // AUMENTADO para melhor controle
             let newValue = startValue + deltaY * sensitivity;
             
-            if (Math.abs(newValue) < 0.08) newValue = 0;
+            // Snap ao centro
+            if (Math.abs(newValue) < 0.05) newValue = 0;
             newValue = Math.max(-1, Math.min(1, newValue));
             
             handlePanChange(trackId, newValue);
-            e.preventDefault();
-        };
+        });
         
-        const onMouseUp = (e) => {
+        document.addEventListener('mouseup', () => {
             if (!isDragging) return;
-            e.stopPropagation();
             isDragging = false;
             container.classList.remove('dragging');
-        };
+            document.body.style.cursor = '';
+        });
         
-        const onTouchStart = (e) => {
+        // Touch events
+        container.addEventListener('touchstart', (e) => {
             e.stopPropagation();
             isDragging = true;
             const track = state.tracks.find(t => t.id === trackId);
@@ -4013,9 +5107,9 @@ function attachDynamicEventListeners() {
             startValue = track ? track.pan : 0;
             container.classList.add('dragging');
             e.preventDefault();
-        };
+        }, { passive: false });
         
-        const onTouchMove = (e) => {
+        container.addEventListener('touchmove', (e) => {
             if (!isDragging) return;
             e.stopPropagation();
             const touch = e.touches[0];
@@ -4028,28 +5122,17 @@ function attachDynamicEventListeners() {
             
             handlePanChange(trackId, newValue);
             e.preventDefault();
-        };
+        }, { passive: false });
         
-        const onTouchEnd = (e) => {
+        container.addEventListener('touchend', () => {
             if (!isDragging) return;
-            e.stopPropagation();
             isDragging = false;
             container.classList.remove('dragging');
-        };
-        
-        container.addEventListener('mousedown', onMouseDown);
-        container.addEventListener('mousemove', onMouseMove);
-        container.addEventListener('mouseup', onMouseUp);
-        container.addEventListener('mouseleave', onMouseUp);
-        
-        container.addEventListener('touchstart', onTouchStart, { passive: false });
-        container.addEventListener('touchmove', onTouchMove, { passive: false });
-        container.addEventListener('touchend', onTouchEnd);
-        container.addEventListener('touchcancel', onTouchEnd);
+        });
     });
 
     // ========================================
-    // MASTER FADER - TOUCH ISOLADO
+    // MASTER FADER - MOUSE GLOBAL
     // ========================================
     const masterWrapper = document.querySelector('.master-fader-wrapper');
     if (masterWrapper) {
@@ -4057,33 +5140,33 @@ function attachDynamicEventListeners() {
         let startY = 0;
         let startValue = 0;
         
-        const onMouseDown = (e) => {
+        masterWrapper.addEventListener('mousedown', (e) => {
             e.stopPropagation();
             isDragging = true;
             startY = e.clientY;
             startValue = state.masterVolume;
             masterWrapper.classList.add('dragging');
+            document.body.style.cursor = 'ns-resize';
             e.preventDefault();
-        };
+        });
         
-        const onMouseMove = (e) => {
+        document.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
-            e.stopPropagation();
             const deltaY = startY - e.clientY;
             const sensitivity = 0.6;
             const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
             handleMasterVolumeChange(newValue);
-            e.preventDefault();
-        };
+        });
         
-        const onMouseUp = (e) => {
+        document.addEventListener('mouseup', () => {
             if (!isDragging) return;
-            e.stopPropagation();
             isDragging = false;
             masterWrapper.classList.remove('dragging');
-        };
+            document.body.style.cursor = '';
+        });
         
-        const onTouchStart = (e) => {
+        // Touch events
+        masterWrapper.addEventListener('touchstart', (e) => {
             e.stopPropagation();
             isDragging = true;
             const touch = e.touches[0];
@@ -4091,9 +5174,9 @@ function attachDynamicEventListeners() {
             startValue = state.masterVolume;
             masterWrapper.classList.add('dragging');
             e.preventDefault();
-        };
+        }, { passive: false });
         
-        const onTouchMove = (e) => {
+        masterWrapper.addEventListener('touchmove', (e) => {
             if (!isDragging) return;
             e.stopPropagation();
             const touch = e.touches[0];
@@ -4102,24 +5185,13 @@ function attachDynamicEventListeners() {
             const newValue = Math.max(0, Math.min(100, startValue + deltaY * sensitivity));
             handleMasterVolumeChange(newValue);
             e.preventDefault();
-        };
+        }, { passive: false });
         
-        const onTouchEnd = (e) => {
+        masterWrapper.addEventListener('touchend', () => {
             if (!isDragging) return;
-            e.stopPropagation();
             isDragging = false;
             masterWrapper.classList.remove('dragging');
-        };
-        
-        masterWrapper.addEventListener('mousedown', onMouseDown);
-        masterWrapper.addEventListener('mousemove', onMouseMove);
-        masterWrapper.addEventListener('mouseup', onMouseUp);
-        masterWrapper.addEventListener('mouseleave', onMouseUp);
-        
-        masterWrapper.addEventListener('touchstart', onTouchStart, { passive: false });
-        masterWrapper.addEventListener('touchmove', onTouchMove, { passive: false });
-        masterWrapper.addEventListener('touchend', onTouchEnd);
-        masterWrapper.addEventListener('touchcancel', onTouchEnd);
+        });
     }
 
     // ========================================
@@ -4193,14 +5265,13 @@ function attachDynamicEventListeners() {
     });
 
     // ========================================
-    // STORAGE MODE SELECT - VERSÃO ATUALIZADA
+    // STORAGE MODE SELECT
     // ========================================
     const storageModeSelect = document.getElementById('storage-mode-select');
     if (storageModeSelect) {
         storageModeSelect.addEventListener('change', async (e) => {
             const newMode = e.target.value;
             
-            // ========== MODO PASTA LOCAL ==========
             if (newMode === 'folder' && supportsFileSystem) {
                 const success = await setupLibraryFolder();
                 if (success) {
@@ -4208,15 +5279,12 @@ function attachDynamicEventListeners() {
                     showAlert('✅ Mudado para Modo Pasta Local!\n\nAgora seus projetos serão salvos diretamente na pasta selecionada.');
                     render();
                 } else {
-                    // Reverte seleção se cancelou
                     e.target.value = state.storageMode;
                 }
             } 
             
-            // ========== MODO GOOGLE DRIVE ==========
             else if (newMode === 'drive') {
                 if (state.googleDriveConnected) {
-                    // Já está conectado, apenas confirma mudança
                     const confirmed = await showConfirm(
                         '✅ Google Drive já está conectado!\n\n' +
                         `📧 ${state.googleDriveEmail}\n\n` +
@@ -4225,37 +5293,26 @@ function attachDynamicEventListeners() {
                     
                     if (confirmed) {
                         state.storageMode = 'drive';
-                        
-                        // Atualiza config
                         const config = loadLibraryConfig();
                         config.storageMode = 'drive';
                         saveLibraryConfig(config);
-                        
                         showAlert('✅ Modo Google Drive ativado!\n\nSeus projetos serão salvos na nuvem.');
                         render();
                     } else {
-                        // Reverte seleção
                         e.target.value = state.storageMode;
                     }
                 } else {
-                    // Não está conectado - inicia conexão AUTOMATICAMENTE
                     console.log('🔐 Iniciando conexão com Google Drive...');
-                    
                     await connectGoogleDrive();
                     
-                    // Verifica se conseguiu conectar
                     if (state.googleDriveConnected) {
                         state.storageMode = 'drive';
-                        
-                        // Atualiza config
                         const config = loadLibraryConfig();
                         config.storageMode = 'drive';
                         saveLibraryConfig(config);
-                        
                         console.log('✅ Google Drive conectado e modo ativado!');
                         render();
                     } else {
-                        // Falhou ou cancelou - reverte seleção
                         console.log('⚠️ Conexão cancelada ou falhou');
                         e.target.value = state.storageMode;
                         render();
@@ -4263,7 +5320,6 @@ function attachDynamicEventListeners() {
                 }
             } 
             
-            // ========== MODO PORTÁTIL ==========
             else if (newMode === 'local') {
                 const confirmed = await showConfirm(
                     '⚠️ Mudar para Modo Portátil?\n\n' +
@@ -4273,29 +5329,54 @@ function attachDynamicEventListeners() {
                 
                 if (confirmed) {
                     state.storageMode = 'local';
-                    
-                    // Limpa referência à pasta
                     libraryFolderHandle = null;
                     state.libraryPath = null;
-                    
-                    // Atualiza config
                     const config = loadLibraryConfig();
                     config.libraryPath = null;
                     config.storageMode = 'local';
                     saveLibraryConfig(config);
-                    
-                    // Remove projetos da biblioteca (mas não os importados)
                     state.savedProjects = state.savedProjects.filter(p => 
                         p.source !== 'library'
                     );
-                    
                     showAlert('✅ Mudado para Modo Portátil!\n\nUse "Salvar" para baixar projetos como .mtp');
                     render();
                 } else {
-                    // Reverte seleção
                     e.target.value = state.storageMode;
                 }
             }
         });
     }
+}
+// ========================================
+// FUNÇÕES FALTANTES - ADICIONE AQUI
+// ========================================
+
+// Toggle Master Mute
+function toggleMasterMute() {
+    state.masterMute = !state.masterMute;
+    updateMasterGain();
+    saveToHistory();
+    markProjectAsModified();
+    render();
+}
+
+// Badge de status do projeto
+function getProjectStatusBadge() {
+    if (!state.currentProject) return '';
+    
+    const badges = [];
+    
+    // Badge de modificado
+    if (state.isProjectModified) {
+        badges.push('<span class="project-badge modified">Modificado</span>');
+    }
+    
+    // Badge de fonte
+    if (state.currentProject.source === 'drive') {
+        badges.push('<span class="project-badge drive">☁️ Drive</span>');
+    } else if (state.currentProject.source === 'library') {
+        badges.push('<span class="project-badge library">📁 Local</span>');
+    }
+    
+    return badges.join('');
 }
