@@ -461,9 +461,9 @@ body {
 .track-name {
     font-size: 0.75rem;
     font-weight: 500;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.5rem; /* ← MUDOU de 0.75rem */
     text-align: center;
-    height: 24px;
+    height: 20px; /* ← MUDOU de 24px */
     display: flex;
     align-items: center;
     max-width: 100px;
@@ -473,21 +473,22 @@ body {
 }
 
 /* VU Meter */
+/* VU Meter */
 .vu-meter-container {
     width: 100%;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.5rem; /* ← MUDOU de 0.75rem */
 }
 
 .vu-meter-label {
     font-size: 0.625rem;
     color: #9ca3af;
     text-align: center;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.2rem; /* ← MUDOU de 0.25rem */
 }
 
 .vu-meter {
     width: 100%;
-    height: 80px;
+    height: 60px; /* ← MUDOU de 80px */
     background-color: #1f2937;
     border-radius: 0.25rem;
     position: relative;
@@ -540,20 +541,20 @@ body {
 /* Pan Control */
 .pan-control {
     width: 100%;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.5rem; /* ← MUDOU de 0.75rem */
 }
 
 .pan-label {
     font-size: 0.625rem;
     color: #9ca3af;
     text-align: center;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.2rem; /* ← MUDOU de 0.25rem */
 }
 
 .pan-knob-container {
     position: relative;
-    width: 48px;
-    height: 48px;
+    width: 44px; /* ← MUDOU de 48px */
+    height: 44px; /* ← MUDOU de 48px */
     margin: 0 auto;
     cursor: grab;
 }
@@ -615,6 +616,7 @@ body {
     font-family: monospace;
 }
 
+
 /* Fader */
 .fader-container {
     flex: 1;
@@ -622,13 +624,13 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.5rem; /* ← MUDOU de 0.75rem */
     position: relative;
 }
 
 .fader-wrapper {
     position: relative;
-    height: 200px;
+    height: 140px; /* ← MUDOU de 200px */
     width: 32px;
     cursor: ns-resize;
 }
@@ -717,10 +719,9 @@ body {
 .volume-value {
     font-size: 0.75rem;
     color: #9ca3af;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.5rem; /* ← MUDOU de 0.75rem */
     font-family: monospace;
 }
-
 /* Track Buttons */
 .track-button {
     width: 48px;
@@ -781,27 +782,28 @@ body {
 }
 
 .master-track .fader-wrapper {
-    width: 40px;
+    width: 32px; /* ← MUDOU de 40px para IGUALAR aos outros */
+    height: 140px; /* ← MUDOU de 200px para IGUALAR aos outros */
 }
 
 .master-track .fader-track {
-    width: 6px;
+    width: 4px; /* ← MUDOU de 6px para IGUALAR aos outros */
 }
 
 .master-track .fader-level {
-    width: 6px;
+    width: 4px; /* ← MUDOU de 6px para IGUALAR aos outros */
     background-color: #3b82f6 !important;
 }
 
 .master-track .fader-handle {
-    width: 40px;
-    height: 56px;
+    width: 32px; /* ← MUDOU de 40px para IGUALAR aos outros */
+    height: 48px; /* ← IGUALADO aos outros */
     background-color: #111827;
     border-color: #3b82f6;
 }
 
 .master-track .fader-handle::after {
-    width: 24px;
+    width: 20px; /* ← MUDOU de 24px para IGUALAR aos outros */
     background-color: #3b82f6;
 }
 
@@ -815,7 +817,6 @@ body {
     color: #4b5563;
     cursor: not-allowed;
 }
-
 /* Library */
 .library-content {
     padding: 1rem;
@@ -1658,15 +1659,16 @@ body {
 
 /* Tablets */
 /* Tablets */
+/* Tablets */
 @media screen and (max-width: 1024px) {
     .tracks-wrapper {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
         gap: 0.5rem;
         overflow-x: hidden;
-        padding: 0.5rem;  /* ← MUDOU de 0.75rem */
+        padding: 0.5rem;
         height: auto;
-        max-height: calc(100vh - 300px);  /* ← MUDOU de 420px para 300px */
+        max-height: calc(100vh - 280px); /* ← AJUSTADO */
         overflow-y: auto;
     }
     
@@ -1688,6 +1690,25 @@ body {
         border-left: 2px solid #3b82f6;
         background: #0f172a;
     }
+
+    /* Ajustar controles para caber melhor */
+    .fader-wrapper {
+        height: 120px; /* ← MUDOU de 140px */
+    }
+    
+    .master-track .fader-wrapper {
+        height: 120px; /* ← IGUALAR ao normal */
+    }
+    
+    .vu-meter {
+        height: 50px; /* ← MUDOU de 60px */
+    }
+    
+    .pan-knob-container {
+        width: 40px; /* ← MUDOU de 50px */
+        height: 40px;
+    }
+}
 
     /* ========================================
    CORREÇÃO SCROLL VERTICAL NO MIXER - TABLET
@@ -1844,7 +1865,6 @@ body {
         width: 50px;
         height: 50px;
     }
-}
 
 /* Tablets pequenos e landscape */
 @media screen and (max-width: 768px) {
