@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>MultiTrack Pro</title>
+    
+    <!-- PWA Meta Tags -->
+    <meta name="description" content="Editor de áudio profissional com múltiplas tracks">
+    <meta name="theme-color" content="#3b82f6">
+    
+    <!-- Meta tags para tela cheia -->
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MultiTrack">
+    
+    <!-- Manifest -->
+    <link rel="manifest" href="manifest.json">
+    
+    <!-- Icons -->
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+    <div id="app"></div>
+
+    <!-- Loading Overlay Template -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <h3 class="loading-title">Importando Tracks</h3>
+            <p class="loading-text">
+                <span id="progress-current">0</span> de <span id="progress-total">0</span> arquivos
+            </p>
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <p class="loading-filename" id="loading-filename"></p>
+        </div>
+    </div>
+
+    <!-- Hidden File Inputs -->
+    <input type="file" id="fileInput" accept="audio/*" multiple class="hidden">
+    <input type="file" id="folderInput" accept="audio/*" webkitdirectory directory multiple class="hidden">
+    <input type="file" id="projectImportInput" accept=".mtp,.json" class="hidden">
+    <input type="file" id="libraryFolderInput" webkitdirectory directory class="hidden">
+    <input type="file" id="folderInputLibrary" accept="audio/*" webkitdirectory directory multiple class="hidden">
+    <input type="file" id="multipleProjectImportInput" accept=".mtp,.json" multiple class="hidden">
+    <script src="script.js"></script>
+    
+    <!-- PWA Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                    .then(registration => {
+                        console.log('✅ Service Worker registrado:', registration.scope);
+                    })
+                    .catch(error => {
+                        console.log('❌ Falha ao registrar Service Worker:', error);
+                    });
+            });
+        }
+
+        // Prompt de instalação
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            
+            // Mostra botão de instalação (opcional)
+            console.log('💡 App pode ser instalado!');
+        });
+    </script>
+    
+    <!-- 🔧 ERUDA - Console Mobile (ADICIONE AQUI) -->
+    <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+    <script>eruda.init();</script>
+</body>
+</html>
